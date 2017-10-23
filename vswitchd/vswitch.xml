@@ -217,6 +217,23 @@
         </p>
       </column>
 
+      <column name="other_config" key="netmap-init"
+              type='{"type": "boolean"}'>
+        <p>
+          Set this value to <code>true</code> to enable runtime support for
+          NETMAP ports. The vswitch must have compile-time support for NETMAP as
+          well.
+        </p>
+        <p>
+          The default value is <code>false</code>. Changing this value requires
+          restarting the daemon
+        </p>
+        <p>
+          If this value is <code>false</code> at startup, any netmap ports which
+          are configured in the bridge will fail.
+        </p>
+      </column>
+
       <column name="other_config" key="dpdk-init"
               type='{"type": "boolean"}'>
         <p>
