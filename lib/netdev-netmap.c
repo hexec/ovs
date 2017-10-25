@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 
 #include <net/netmap.h>
+#define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 
 #include "byte-order.h"
@@ -49,6 +50,9 @@ VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
 struct netdev_netmap {
     struct netdev up;
+    struct nm_desc *nmd;
+    struct pollfd pfd[1];
+
     int max_packet_len;
 
     struct ovs_mutex mutex OVS_ACQ_AFTER(netmap_mutex);
@@ -102,11 +106,12 @@ int
 netdev_netmap_construct(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
-    //const char *type = netdev_get_type(netdev);
+    const char *type = netdev_get_type(netdev);
 
-    VLOG_INFO("NETMAP construct");
+    VLOG_INFO("NETMAP construct: type -> %s", type);
     ovs_mutex_init(&dev->mutex);
-    //eth_addr_random(&dev->etheraddr);
+    dev->nmd = nm_open("eth0", NULL, 0, NULL);
+    eth_addr_random(&dev->hwaddr);
 
     return 0;
 }
@@ -116,6 +121,7 @@ netdev_netmap_destruct(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
+    nm_close(dev->nmd);
     ovs_mutex_destroy(&dev->mutex);
 }
 
@@ -132,6 +138,7 @@ netdev_netmap_class_init(void)
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
 
     if (ovsthread_once_start(&once)) {
+        VLOG_INFO("NETMAP class_init");
         ovsthread_once_done(&once);
     }
 
