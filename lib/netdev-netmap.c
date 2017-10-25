@@ -34,6 +34,19 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
+#define ETHER_ADDR_LEN   6
+#define ETHER_TYPE_LEN   2
+#define ETHER_CRC_LEN   4
+#define ETHER_HDR_LEN   (ETHER_ADDR_LEN * 2 + ETHER_TYPE_LEN)
+#define ETHER_MIN_LEN   64
+#define ETHER_MAX_LEN   1518
+#define ETHER_MTU   (ETHER_MAX_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN)
+#define ETHER_MIN_MTU   68
+
+#define MTU_TO_FRAME_LEN(mtu)       ((mtu) + ETHER_HDR_LEN + ETHER_CRC_LEN)
+
+#define NETDEV_NETMAP_MAX_PKT_LEN     9728
+
 struct netdev_netmap {
     struct netdev up;
     int max_packet_len;
@@ -91,6 +104,7 @@ netdev_netmap_construct(struct netdev *netdev)
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
     //const char *type = netdev_get_type(netdev);
 
+    VLOG_INFO("NETMAP construct");
     ovs_mutex_init(&dev->mutex);
     //eth_addr_random(&dev->etheraddr);
 
@@ -173,14 +187,62 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
 }
 
 static int
+netdev_netmap_get_ifindex(const struct netdev *netdev)
+{
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+
+    ovs_mutex_lock(&dev->mutex);
+    /* Calculate hash from the netdev name. Ensure that ifindex is a 24-bit
+     * postive integer to meet RFC 2863 recommendations.
+     */
+    int ifindex = hash_string(netdev->name, 0) % 0xfffffe + 1;
+    ovs_mutex_unlock(&dev->mutex);
+
+    return ifindex;
+}
+
+static int
+netdev_netmap_get_mtu(const struct netdev *netdev, int *mtu)
+{
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+
+    ovs_mutex_lock(&dev->mutex);
+    *mtu = dev->mtu;
+    ovs_mutex_unlock(&dev->mutex);
+
+    return 0;
+}
+
+static int
+netdev_netmap_set_mtu(struct netdev *netdev, int mtu)
+{
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+
+    if (MTU_TO_FRAME_LEN(mtu) > NETDEV_NETMAP_MAX_PKT_LEN
+        || mtu < ETHER_MIN_MTU) {
+        VLOG_WARN("%s: unsupported MTU %d\n", dev->up.name, mtu);
+        return EINVAL;
+    }
+
+    ovs_mutex_lock(&dev->mutex);
+    if (dev->requested_mtu != mtu) {
+        dev->requested_mtu = mtu;
+        netdev_request_reconfigure(netdev);
+    }
+    ovs_mutex_unlock(&dev->mutex);
+
+    return 0;
+}
+
+static int
 netdev_netmap_set_etheraddr(struct netdev *netdev, const struct eth_addr mac)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
     ovs_mutex_lock(&dev->mutex);
-    //dev->etheraddr = mac;
+    dev->hwaddr = mac;
     ovs_mutex_unlock(&dev->mutex);
-    //netdev_change_seq_changed(netdev);
+    netdev_change_seq_changed(netdev);
 
     return 0;
 }
@@ -191,7 +253,7 @@ netdev_netmap_get_etheraddr(const struct netdev *netdev, struct eth_addr *mac)
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
     ovs_mutex_lock(&dev->mutex);
-    //*mac = netdev->etheraddr;
+    *mac = dev->hwaddr;
     ovs_mutex_unlock(&dev->mutex);
 
     return 0;
@@ -211,20 +273,6 @@ netdev_netmap_update_flags(struct netdev *netdev OVS_UNUSED,
     return 0;
 }
 
-/*
-static void
-netdev_netmap_run(const struct netdev_class *netdev_class OVS_UNUSED)
-{
-return;
-}
-
-static void
-netdev_netmap_wait(const struct netdev_class *netdev_class OVS_UNUSED)
-{
-    return;
-}
-*/
-
 void
 netdev_netmap_inc_rx(const struct netdev *netdev,
                     const struct dpif_flow_stats *stats)
@@ -233,8 +281,8 @@ netdev_netmap_inc_rx(const struct netdev *netdev,
         struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
         ovs_mutex_lock(&dev->mutex);
-        //dev->stats.rx_packets += stats->n_packets;
-        //dev->stats.rx_bytes += stats->n_bytes;
+        dev->stats.rx_packets += stats->n_packets;
+        dev->stats.rx_bytes += stats->n_bytes;
         ovs_mutex_unlock(&dev->mutex);
     }
 }
@@ -247,10 +295,23 @@ netdev_netmap_inc_tx(const struct netdev *netdev,
         struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
         ovs_mutex_lock(&dev->mutex);
-        //dev->stats.tx_packets += stats->n_packets;
-        //dev->stats.tx_bytes += stats->n_bytes;
+        dev->stats.tx_packets += stats->n_packets;
+        dev->stats.tx_bytes += stats->n_bytes;
         ovs_mutex_unlock(&dev->mutex);
     }
+}
+
+static int
+netdev_netmap_get_carrier(const struct netdev *netdev, bool *carrier)
+{
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+
+    ovs_mutex_lock(&dev->mutex);
+    //check_link_status(dev);
+    //*carrier = dev->link.link_status;
+    ovs_mutex_unlock(&dev->mutex);
+
+    return 0;
 }
 
 static int
@@ -259,11 +320,29 @@ netdev_netmap_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
     ovs_mutex_lock(&dev->mutex);
-    //stats->tx_packets = dev->stats.tx_packets;
-    //stats->tx_bytes = dev->stats.tx_bytes;
-    //stats->rx_packets = dev->stats.rx_packets;
-    //stats->rx_bytes = dev->stats.rx_bytes;
+    stats->tx_packets = dev->stats.tx_packets;
+    stats->tx_bytes = dev->stats.tx_bytes;
+    stats->rx_packets = dev->stats.rx_packets;
+    stats->rx_bytes = dev->stats.rx_bytes;
     ovs_mutex_unlock(&dev->mutex);
+
+    return 0;
+}
+
+static int
+netdev_netmap_get_status(const struct netdev *netdev, struct smap *args)
+{
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+
+    /*if (!is_valid_port(dev->port_id)) {
+        return ENODEV;
+    }*/
+
+    ovs_mutex_lock(&dev->mutex);
+    //eth_dev_info_get(dev->port_id, &dev_info);
+    ovs_mutex_unlock(&dev->mutex);
+
+    //smap_add_format(args, "port_no", "%d", dev->port_id);
 
     return 0;
 }
@@ -295,10 +374,10 @@ netdev_netmap_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
     NULL,                       /* send_wait */             \
     netdev_netmap_set_etheraddr,                            \
     netdev_netmap_get_etheraddr,                            \
-    NULL,                       /* get_mtu */               \
-    NULL,                       /* set_mtu */               \
-    NULL,                       /* get_ifindex */           \
-    NULL,                       /* get_carrier */           \
+    netdev_netmap_get_mtu,                                  \
+    netdev_netmap_set_mtu,                                  \
+    netdev_netmap_get_ifindex,                              \
+    GET_CARRIER,                                            \
     NULL,                       /* get_carrier_resets */    \
     NULL,                       /* get_miimon */            \
     GET_STATS,                                              \
@@ -351,10 +430,10 @@ static const struct netdev_class netmap_class =
         NULL, //netdev_netmap_set_config,
         NULL, //netdev_netmap_set_tx_multiq,
         netdev_netmap_eth_send,
-        NULL, //netdev_netmap_get_carrier,
+        netdev_netmap_get_carrier,
         netdev_netmap_get_stats,
         NULL, //netdev_netmap_get_features,
-        NULL, //netdev_netmap_get_status,
+        netdev_netmap_get_status,
         netdev_netmap_reconfigure,
         netdev_netmap_rxq_recv);
 
