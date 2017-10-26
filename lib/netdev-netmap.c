@@ -35,6 +35,8 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
+static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
+
 #define ETHER_ADDR_LEN   6
 #define ETHER_TYPE_LEN   2
 #define ETHER_CRC_LEN   4
@@ -50,7 +52,7 @@ VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
 struct netdev_netmap {
     struct netdev up;
-    struct nm_desc *nmd;
+    struct nm_desc *netmap_desc;
     struct pollfd pfd[1];
 
     int max_packet_len;
@@ -58,8 +60,6 @@ struct netdev_netmap {
     struct ovs_mutex mutex OVS_ACQ_AFTER(netmap_mutex);
 
     int mtu;
-    int socket_id;
-    int buf_size;
     struct netdev_stats stats;
 
     struct eth_addr hwaddr;
@@ -94,7 +94,7 @@ netdev_netmap_alloc(void)
 {
     struct netdev_netmap *dev;
 
-    dev = (struct netdev_netmap *) malloc(sizeof *dev);
+    dev = (struct netdev_netmap *) xzalloc(sizeof *dev);
     if (dev) {
         return &dev->up;
     }
@@ -106,12 +106,36 @@ int
 netdev_netmap_construct(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+    const char *ifname = netdev_get_name(netdev);
     const char *type = netdev_get_type(netdev);
 
-    VLOG_INFO("NETMAP construct: type -> %s", type);
+    VLOG_INFO("type -> %s", type);
+    VLOG_INFO("ifname -> %s", ifname);
+
+    if (access("/dev/netmap", F_OK) == -1) {
+        VLOG_WARN("/dev/netmap not found.");
+    }
+
     ovs_mutex_init(&dev->mutex);
-    dev->nmd = nm_open("eth0", NULL, 0, NULL);
+    dev->requested_mtu = ETHER_MTU;
     eth_addr_random(&dev->hwaddr);
+
+    dev->netmap_desc = nm_open(ifname, NULL, 0, NULL);
+    if (!dev->netmap_desc) {
+        if (!errno) {
+            VLOG_WARN("opening \"%s\" failed: not a netmap port", ifname);
+        } else {
+            VLOG_WARN("opening \"%s\" failed: %s", ifname,
+                  ovs_strerror(errno));
+        }
+        return EINVAL;
+    } else {
+        VLOG_INFO("opening \"%s\"", ifname);
+    }
+
+    dev->flags = NETDEV_UP | NETDEV_PROMISC;
+
+    netdev_request_reconfigure(netdev);
 
     return 0;
 }
@@ -120,8 +144,10 @@ static void
 netdev_netmap_destruct(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+    const char *ifname = netdev_get_name(netdev);
 
-    nm_close(dev->nmd);
+    VLOG_INFO("closing netmap port: \"%s\"", ifname);
+    nm_close(dev->netmap_desc);
     ovs_mutex_destroy(&dev->mutex);
 }
 
@@ -138,11 +164,32 @@ netdev_netmap_class_init(void)
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
 
     if (ovsthread_once_start(&once)) {
-        VLOG_INFO("NETMAP class_init");
         ovsthread_once_done(&once);
     }
 
     return 0;
+}
+
+static int
+netdev_netmap_reconfigure(struct netdev *netdev)
+{
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+    int err = 0;
+
+    ovs_mutex_lock(&dev->mutex);
+
+    if (dev->mtu == dev->requested_mtu) {
+        /* Reconfiguration is unnecessary */
+        goto out;
+    }
+
+    dev->mtu = dev->requested_mtu;
+
+    netdev_change_seq_changed(netdev);
+
+out:
+    ovs_mutex_unlock(&dev->mutex);
+    return err;
 }
 
 
@@ -415,7 +462,7 @@ netdev_netmap_get_status(const struct netdev *netdev, struct smap *args)
     NULL,                       /* arp_lookup */            \
                                                             \
     netdev_netmap_update_flags,                             \
-    NULL,                       /* reconfigure */           \
+    RECONFIGURE,                                            \
                                                             \
     NULL,                   /* rx_alloc */                  \
     NULL,                   /* rx_construct */              \
@@ -434,7 +481,7 @@ static const struct netdev_class netmap_class =
         netdev_netmap_class_init,
         netdev_netmap_construct,
         netdev_netmap_destruct,
-        NULL, //netdev_netmap_set_config,
+        netdev_netmap_set_config,
         NULL, //netdev_netmap_set_tx_multiq,
         netdev_netmap_eth_send,
         netdev_netmap_get_carrier,
