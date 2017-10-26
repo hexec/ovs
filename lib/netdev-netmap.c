@@ -75,6 +75,10 @@ struct netdev_netmap {
     int txq_size;
 };
 
+struct netdev_rxq_netmap {
+    struct netdev_rxq up;
+};
+
 static void netdev_netmap_destruct(struct netdev *netdev);
 
 static bool
@@ -86,7 +90,15 @@ is_netmap_class(const struct netdev_class *class)
 static struct netdev_netmap *
 netdev_netmap_cast(const struct netdev *netdev)
 {
+    //ovs_assert(is_netmap_class(netdev_get_class(netdev)));
     return CONTAINER_OF(netdev, struct netdev_netmap, up);
+}
+
+static struct netdev_rxq_netmap *
+netdev_rxq_netmap_cast(const struct netdev_rxq *rx)
+{
+    //ovs_assert(is_netmap_class(netdev_get_class(rx->netdev)));
+    return CONTAINER_OF(rx, struct netdev_rxq_netmap, up);
 }
 
 static struct netdev *
@@ -156,6 +168,45 @@ netdev_netmap_dealloc(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
     free(dev);
+}
+
+static struct netdev_rxq *
+netdev_netmap_rxq_alloc(void)
+{
+    VLOG_INFO("rxq_alloc");
+    struct netdev_rxq_netmap *rx = xzalloc(sizeof *rx);
+    return &rx->up;
+}
+
+static int
+netdev_netmap_rxq_construct(struct netdev_rxq *rxq)
+{
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
+    struct netdev *netdev = rx->up.netdev;
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+    int err = 0;
+
+    VLOG_INFO("rxq_construct");
+    ovs_mutex_lock(&dev->mutex);
+
+out:
+    ovs_mutex_unlock(&dev->mutex);
+    return err;
+}
+
+static void
+netdev_netmap_rxq_destruct(struct netdev_rxq *rxq)
+{
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
+    VLOG_INFO("rxq_destruct");
+}
+
+static void
+netdev_netmap_rxq_dealloc(struct netdev_rxq *rxq)
+{
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
+    free(rx);
+    VLOG_INFO("rxq_dealloc");
 }
 
 static int
@@ -238,6 +289,25 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
 
     netdev_netmap_send__(dev, qid, batch, may_steal, concurrent_txq);
     return 0;
+}
+
+static int
+netdev_netmap_rxq_recv(int fd, struct dp_packet *buffer)
+{
+    VLOG_INFO("rxq_recv");
+    return EAGAIN;
+}
+
+static void
+netdev_netmap_rxq_wait(struct netdev_rxq *rxq_)
+{
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq_);
+}
+
+static int
+netdev_netmap_rxq_drain(struct netdev_rxq *rxq_)
+{
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq_);
 }
 
 static int
@@ -464,16 +534,15 @@ netdev_netmap_get_status(const struct netdev *netdev, struct smap *args)
     netdev_netmap_update_flags,                             \
     RECONFIGURE,                                            \
                                                             \
-    NULL,                   /* rx_alloc */                  \
-    NULL,                   /* rx_construct */              \
-    NULL,                   /* rx_destruct */               \
-    NULL,                   /* rx_dealloc */                \
-    NULL,                   /* rx_recv */                   \
-    NULL,                   /* rx_wait */                   \
-    NULL,                   /* rx_drain */                  \
+    netdev_netmap_rxq_alloc,                                \
+    netdev_netmap_rxq_construct,                            \
+    netdev_netmap_rxq_destruct,                             \
+    netdev_netmap_rxq_dealloc,                              \
+    RXQ_RECV,                                               \
+    netdev_netmap_rxq_wait,                                 \
+    netdev_netmap_rxq_drain,                                \
     NO_OFFLOAD_API                                          \
 }
-
 
 static const struct netdev_class netmap_class =
     NETDEV_NETMAP_CLASS(
