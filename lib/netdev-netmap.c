@@ -292,7 +292,7 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
 }
 
 static int
-netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet *batch)
+netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
     struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
@@ -313,24 +313,30 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet *batch)
         head = rxring->head;
         tail = rxring->tail;
         bsize = tail - head;
-        if ( bsize < 0) {
+        //VLOG_INFO("ring %d >> batch size: %d", ri, bsize);
+        if (bsize < 0) {
             bsize += rxring->num_slots;
+            //VLOG_INFO("ring %d >> num_slots: %d", ri, rxring->num_slots);
         }
 
-        //VLOG_INFO("ring %d >> batch size: %d", ri, bsize);
-
-        for (; head != tail; head = nm_ring_next(rxring, head)) {
+        while (head != tail && batch->count < NETDEV_MAX_BURST) {
             struct netmap_slot *slot = rxring->slot + head;
             struct dp_packet *pkt_buf = dp_packet_new(slot->len);
-            memcpy(dp_packet_data(pkt_buf), NETMAP_BUF(rxring, slot->buf_idx), slot->len);
+            memcpy(dp_packet_data(pkt_buf),
+                   NETMAP_BUF(rxring, slot->buf_idx),
+                   slot->len);
             dp_packet_set_size(pkt_buf, slot->len);
+            //VLOG_INFO("rxq_recv: slot is %d bytes", slot->len);
             dp_packet_batch_add(batch, pkt_buf);
+            head = nm_ring_next(rxring, head);
         }
 
         rxring->cur = rxring->head = head;
     }
+
     //VLOG_INFO("total batch size: %d", (int) batch->count);
     dp_packet_batch_init_packet_fields(batch);
+
     return 0;
 }
 
@@ -344,7 +350,7 @@ netdev_netmap_rxq_wait(struct netdev_rxq *rxq)
     rx->pfd[0].fd = dev->nmd->fd;
     rx->pfd[0].events = POLLIN;
 
-    ret = poll(rx->pfd, 1, 100);
+    ret = poll(rx->pfd, 1, 100;
 }
 
 static int
