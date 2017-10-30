@@ -52,8 +52,7 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 struct netdev_netmap {
     struct netdev up;
-    struct nm_desc *netmap_desc;
-    struct pollfd pfd[1];
+    struct nm_desc *nmd;
 
     int max_packet_len;
 
@@ -77,6 +76,7 @@ struct netdev_netmap {
 
 struct netdev_rxq_netmap {
     struct netdev_rxq up;
+    struct pollfd pfd[1];
 };
 
 static void netdev_netmap_destruct(struct netdev *netdev);
@@ -132,8 +132,8 @@ netdev_netmap_construct(struct netdev *netdev)
     dev->requested_mtu = ETHER_MTU;
     eth_addr_random(&dev->hwaddr);
 
-    dev->netmap_desc = nm_open(ifname, NULL, 0, NULL);
-    if (!dev->netmap_desc) {
+    dev->nmd = nm_open(ifname, NULL, 0, NULL);
+    if (!dev->nmd) {
         if (!errno) {
             VLOG_WARN("opening \"%s\" failed: not a netmap port", ifname);
         } else {
@@ -159,7 +159,7 @@ netdev_netmap_destruct(struct netdev *netdev)
     const char *ifname = netdev_get_name(netdev);
 
     VLOG_INFO("closing netmap port: \"%s\"", ifname);
-    nm_close(dev->netmap_desc);
+    nm_close(dev->nmd);
     ovs_mutex_destroy(&dev->mutex);
 }
 
@@ -292,22 +292,66 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
 }
 
 static int
-netdev_netmap_rxq_recv(int fd, struct dp_packet *buffer)
+netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet *batch)
 {
-    VLOG_INFO("rxq_recv");
-    return EAGAIN;
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
+    struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
+    unsigned int ri;
+    int ret;
+
+    if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
+        VLOG_INFO("rxq_recv: interface is down");
+        return EAGAIN;
+    }
+
+    for (ri = dev->nmd->first_rx_ring; ri <= dev->nmd->last_rx_ring; ri ++) {
+        struct netmap_ring *rxring;
+        unsigned head, tail;
+        int bsize;
+
+        rxring = NETMAP_RXRING(dev->nmd->nifp, ri);
+        head = rxring->head;
+        tail = rxring->tail;
+        bsize = tail - head;
+        if ( bsize < 0) {
+            bsize += rxring->num_slots;
+        }
+
+        //VLOG_INFO("ring %d >> batch size: %d", ri, bsize);
+
+        for (; head != tail; head = nm_ring_next(rxring, head)) {
+            struct netmap_slot *slot = rxring->slot + head;
+            struct dp_packet *pkt_buf = dp_packet_new(slot->len);
+            memcpy(dp_packet_data(pkt_buf), NETMAP_BUF(rxring, slot->buf_idx), slot->len);
+            dp_packet_set_size(pkt_buf, slot->len);
+            dp_packet_batch_add(batch, pkt_buf);
+        }
+
+        rxring->cur = rxring->head = head;
+    }
+    //VLOG_INFO("total batch size: %d", (int) batch->count);
+    dp_packet_batch_init_packet_fields(batch);
+    return 0;
 }
 
 static void
-netdev_netmap_rxq_wait(struct netdev_rxq *rxq_)
+netdev_netmap_rxq_wait(struct netdev_rxq *rxq)
 {
-    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq_);
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
+    struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
+    int ret;
+
+    rx->pfd[0].fd = dev->nmd->fd;
+    rx->pfd[0].events = POLLIN;
+
+    ret = poll(rx->pfd, 1, 100);
 }
 
 static int
 netdev_netmap_rxq_drain(struct netdev_rxq *rxq_)
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq_);
+    VLOG_INFO("rxq_drain");
 }
 
 static int
