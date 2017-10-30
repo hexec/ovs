@@ -76,7 +76,7 @@ struct netdev_netmap {
 
 struct netdev_rxq_netmap {
     struct netdev_rxq up;
-    struct pollfd pfd[1];
+    int fd;
 };
 
 static void netdev_netmap_destruct(struct netdev *netdev);
@@ -188,7 +188,7 @@ netdev_netmap_rxq_construct(struct netdev_rxq *rxq)
 
     VLOG_INFO("rxq_construct");
     ovs_mutex_lock(&dev->mutex);
-
+    rx->fd = dev->nmd->fd;
 out:
     ovs_mutex_unlock(&dev->mutex);
     return err;
@@ -300,24 +300,16 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     int ret;
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
-        VLOG_INFO("rxq_recv: interface is down");
         return EAGAIN;
     }
 
     for (ri = dev->nmd->first_rx_ring; ri <= dev->nmd->last_rx_ring; ri ++) {
         struct netmap_ring *rxring;
         unsigned head, tail;
-        int bsize;
 
         rxring = NETMAP_RXRING(dev->nmd->nifp, ri);
         head = rxring->head;
         tail = rxring->tail;
-        bsize = tail - head;
-        //VLOG_INFO("ring %d >> batch size: %d", ri, bsize);
-        if (bsize < 0) {
-            bsize += rxring->num_slots;
-            //VLOG_INFO("ring %d >> num_slots: %d", ri, rxring->num_slots);
-        }
 
         while (head != tail && batch->count < NETDEV_MAX_BURST) {
             struct netmap_slot *slot = rxring->slot + head;
@@ -326,7 +318,6 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
                    NETMAP_BUF(rxring, slot->buf_idx),
                    slot->len);
             dp_packet_set_size(pkt_buf, slot->len);
-            //VLOG_INFO("rxq_recv: slot is %d bytes", slot->len);
             dp_packet_batch_add(batch, pkt_buf);
             head = nm_ring_next(rxring, head);
         }
@@ -334,7 +325,6 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         rxring->cur = rxring->head = head;
     }
 
-    //VLOG_INFO("total batch size: %d", (int) batch->count);
     dp_packet_batch_init_packet_fields(batch);
 
     return 0;
@@ -344,13 +334,7 @@ static void
 netdev_netmap_rxq_wait(struct netdev_rxq *rxq)
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
-    struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
-    int ret;
-
-    rx->pfd[0].fd = dev->nmd->fd;
-    rx->pfd[0].events = POLLIN;
-
-    ret = poll(rx->pfd, 1, 100);
+    poll_fd_wait(rx->fd, POLLIN);
 }
 
 static int
