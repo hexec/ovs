@@ -350,7 +350,7 @@ netdev_netmap_rxq_wait(struct netdev_rxq *rxq)
     rx->pfd[0].fd = dev->nmd->fd;
     rx->pfd[0].events = POLLIN;
 
-    ret = poll(rx->pfd, 1, 100;
+    ret = poll(rx->pfd, 1, 100);
 }
 
 static int
