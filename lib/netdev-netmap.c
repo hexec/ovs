@@ -121,9 +121,6 @@ netdev_netmap_construct(struct netdev *netdev)
     const char *ifname = netdev_get_name(netdev);
     const char *type = netdev_get_type(netdev);
 
-    VLOG_INFO("type -> %s", type);
-    VLOG_INFO("ifname -> %s", ifname);
-
     if (access("/dev/netmap", F_OK) == -1) {
         VLOG_WARN("/dev/netmap not found.");
     }
@@ -173,7 +170,6 @@ netdev_netmap_dealloc(struct netdev *netdev)
 static struct netdev_rxq *
 netdev_netmap_rxq_alloc(void)
 {
-    VLOG_INFO("rxq_alloc");
     struct netdev_rxq_netmap *rx = xzalloc(sizeof *rx);
     return &rx->up;
 }
@@ -186,7 +182,6 @@ netdev_netmap_rxq_construct(struct netdev_rxq *rxq)
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
     int err = 0;
 
-    VLOG_INFO("rxq_construct");
     ovs_mutex_lock(&dev->mutex);
     rx->fd = dev->nmd->fd;
 out:
@@ -198,7 +193,6 @@ static void
 netdev_netmap_rxq_destruct(struct netdev_rxq *rxq)
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
-    VLOG_INFO("rxq_destruct");
 }
 
 static void
@@ -206,7 +200,6 @@ netdev_netmap_rxq_dealloc(struct netdev_rxq *rxq)
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
     free(rx);
-    VLOG_INFO("rxq_dealloc");
 }
 
 static int
@@ -281,9 +274,6 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
         error = EAGAIN;
         goto free_batch;
     }
-    else if (OVS_UNLIKELY(!may_steal)) {
-        goto free_batch;
-    }
 
     unsigned int i  = 0;
     unsigned int di = dev->nmd->first_tx_ring;
@@ -297,7 +287,7 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
         if (ntx == 0) {
             /* if next ring is last ring try to sync */
             if (OVS_UNLIKELY(di + 1 == txring->num_slots)) {
-                ioctl(NIOCTXSYNC);
+                ioctl(dev->nmd->fd, NIOCTXSYNC, NULL);
             }
             di = nm_ring_next(txring, di);
             continue;

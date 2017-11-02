@@ -342,7 +342,7 @@ AC_DEFUN([OVS_CHECK_NETMAP], [
     NETMAP_INCLUDE="-I/usr/include/net"
     CFLAGS="$CFLAGS $NETMAP_INCLUDE"
     OVS_CFLAGS="$OVS_CFLAGS $NETMAP_INCLUDE"
-	NETMAP_FOUND=true
+    NETMAP_FOUND=true
     AC_DEFINE([NETMAP_NETDEV], [1], [System uses the NETMAP module.])
   fi
 
