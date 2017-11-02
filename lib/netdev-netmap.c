@@ -269,26 +269,64 @@ netdev_netmap_set_config(const struct netdev *netdev, const struct smap *args,
     return 0;
 }
 
-static inline void
-netdev_netmap_send__(struct netdev_netmap *dev, int qid,
-                   struct dp_packet_batch *batch, bool may_steal,
-                   bool concurrent_txq)
-{
-    if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
-        dp_packet_delete_batch(batch, may_steal);
-        return;
-    }
-}
-
 static int
 netdev_netmap_eth_send(struct netdev *netdev, int qid,
                      struct dp_packet_batch *batch, bool may_steal,
                      bool concurrent_txq)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+    int error = 0;
 
-    netdev_netmap_send__(dev, qid, batch, may_steal, concurrent_txq);
-    return 0;
+    if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
+        error = EAGAIN;
+        goto free_batch;
+    }
+    else if (OVS_UNLIKELY(!may_steal)) {
+        goto free_batch;
+    }
+
+    unsigned int i  = 0;
+    unsigned int di = dev->nmd->first_tx_ring;
+    while (1) {
+        struct netmap_ring *txring;
+        unsigned int txhead;
+        int ntx;
+
+        txring = NETMAP_TXRING(dev->nmd->nifp, di);
+        ntx = nm_ring_space(txring); /* Available slots in this ring. */
+        if (ntx == 0) {
+            di = nm_ring_next(txring, di);
+            continue;
+        }
+
+        /* Transmit batch in this ring as much as possible. */
+        txhead = txring->head;
+        for (; i < ntx; i++) {
+                struct netmap_slot *ts = &txring->slot[txhead];
+                struct dp_packet *packet;
+                char *txbuf;
+
+                /* No more packets to send. */
+                if (OVS_UNLIKELY(i == batch->count)) {
+                    txring->head = txring->cur = txhead;
+                    goto free_batch;
+                }
+
+                packet = batch->packets[i];
+                txbuf  = NETMAP_BUF(txring, ts->buf_idx);
+
+                ts->len = dp_packet_get_send_len(packet);
+                memcpy(txbuf, dp_packet_data(packet), ts->len);
+                txhead = nm_ring_next(txring, txhead);
+        }
+        /* We still have data to send,
+         * update txring head and switch to another one. */
+        txring->head = txring->cur = txhead;
+    }
+
+free_batch:
+    dp_packet_delete_batch(batch, may_steal);
+    return error;
 }
 
 static int
@@ -341,7 +379,6 @@ static int
 netdev_netmap_rxq_drain(struct netdev_rxq *rxq_)
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq_);
-    VLOG_INFO("rxq_drain");
 }
 
 static int
