@@ -295,6 +295,10 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
         txring = NETMAP_TXRING(dev->nmd->nifp, di);
         ntx = nm_ring_space(txring); /* Available slots in this ring. */
         if (ntx == 0) {
+            /* if next ring is last ring try to sync */
+            if (OVS_UNLIKELY(di + 1 == txring->num_slots)) {
+                ioctl(NIOCTXSYNC);
+            }
             di = nm_ring_next(txring, di);
             continue;
         }
@@ -319,7 +323,7 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
                 memcpy(txbuf, dp_packet_data(packet), ts->len);
                 txhead = nm_ring_next(txring, txhead);
         }
-        /* We still have data to send,
+        /* We still have packets to send,
          * update txring head and switch to another one. */
         txring->head = txring->cur = txhead;
     }
@@ -327,6 +331,12 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
 free_batch:
     dp_packet_delete_batch(batch, may_steal);
     return error;
+}
+
+static void
+netdev_netmap_send_wait(struct netdev *netdev, int qid OVS_UNUSED)
+{
+    //poll_immediate_wake();
 }
 
 static int
@@ -566,7 +576,7 @@ netdev_netmap_get_status(const struct netdev *netdev, struct smap *args)
     NULL,                       /* get_numa_id */           \
     NULL,                       /* tx multiq */             \
     SEND,                       /* send */                  \
-    NULL,                       /* send_wait */             \
+    netdev_netmap_send_wait,                                \
     netdev_netmap_set_etheraddr,                            \
     netdev_netmap_get_etheraddr,                            \
     netdev_netmap_get_mtu,                                  \
