@@ -54,8 +54,6 @@ struct netdev_netmap {
     struct netdev up;
     struct nm_desc *nmd;
 
-    int max_packet_len;
-
     struct ovs_mutex mutex OVS_ACQ_AFTER(netmap_mutex);
 
     int mtu;
@@ -203,6 +201,22 @@ netdev_netmap_rxq_dealloc(struct netdev_rxq *rxq)
 }
 
 static int
+netdev_netmap_set_tx_multiq(struct netdev *netdev, unsigned int n_txq)
+{
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+
+    ovs_mutex_lock(&dev->mutex);
+
+    if (dev->requested_n_txq != n_txq) {
+        dev->requested_n_txq = n_txq;
+        netdev_request_reconfigure(netdev);
+    }
+
+    ovs_mutex_unlock(&dev->mutex);
+    return 0;
+}
+
+static int
 netdev_netmap_class_init(void)
 {
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
@@ -263,9 +277,10 @@ netdev_netmap_set_config(const struct netdev *netdev, const struct smap *args,
 }
 
 static int
-netdev_netmap_eth_send(struct netdev *netdev, int qid,
+netdev_netmap_send(struct netdev *netdev, int qid,
                      struct dp_packet_batch *batch, bool may_steal,
                      bool concurrent_txq)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
     int error = 0;
@@ -303,6 +318,7 @@ netdev_netmap_eth_send(struct netdev *netdev, int qid,
                 /* No more packets to send. */
                 if (OVS_UNLIKELY(i == batch->count)) {
                     txring->head = txring->cur = txhead;
+                    ioctl(dev->nmd->fd, NIOCTXSYNC, NULL);
                     goto free_batch;
                 }
 
@@ -326,21 +342,22 @@ free_batch:
 static void
 netdev_netmap_send_wait(struct netdev *netdev, int qid OVS_UNUSED)
 {
-    //poll_immediate_wake();
+    poll_immediate_wake();
 }
 
 static int
 netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
     struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
-    unsigned int ri;
-    int ret;
+    unsigned int i = 0;
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
         return EAGAIN;
     }
 
+    unsigned int ri;
     for (ri = dev->nmd->first_rx_ring; ri <= dev->nmd->last_rx_ring; ri ++) {
         struct netmap_ring *rxring;
         unsigned head, tail;
@@ -349,20 +366,23 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         head = rxring->head;
         tail = rxring->tail;
 
-        while (head != tail && batch->count < NETDEV_MAX_BURST) {
+        while (head != tail && i <= NETDEV_MAX_BURST) {
             struct netmap_slot *slot = rxring->slot + head;
-            struct dp_packet *pkt_buf = dp_packet_new(slot->len);
-            memcpy(dp_packet_data(pkt_buf),
+            struct dp_packet *packet = dp_packet_new(slot->len);
+            memcpy(dp_packet_data(packet),
                    NETMAP_BUF(rxring, slot->buf_idx),
                    slot->len);
-            dp_packet_set_size(pkt_buf, slot->len);
-            dp_packet_batch_add(batch, pkt_buf);
+            dp_packet_set_size(packet, slot->len);
+            dp_packet_batch_add(batch, packet);
             head = nm_ring_next(rxring, head);
+            i++;
         }
 
         rxring->cur = rxring->head = head;
     }
 
+    if (batch->count == 0)
+        return EAGAIN;
     dp_packet_batch_init_packet_fields(batch);
 
     return 0;
@@ -378,7 +398,6 @@ netdev_netmap_rxq_wait(struct netdev_rxq *rxq)
 static int
 netdev_netmap_rxq_drain(struct netdev_rxq *rxq_)
 {
-    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq_);
 }
 
 static int
@@ -529,15 +548,8 @@ netdev_netmap_get_status(const struct netdev *netdev, struct smap *args)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
-    /*if (!is_valid_port(dev->port_id)) {
-        return ENODEV;
-    }*/
-
     ovs_mutex_lock(&dev->mutex);
-    //eth_dev_info_get(dev->port_id, &dev_info);
     ovs_mutex_unlock(&dev->mutex);
-
-    //smap_add_format(args, "port_no", "%d", dev->port_id);
 
     return 0;
 }
@@ -564,7 +576,7 @@ netdev_netmap_get_status(const struct netdev *netdev, struct smap *args)
     NULL,                       /* push header */           \
     NULL,                       /* pop header */            \
     NULL,                       /* get_numa_id */           \
-    NULL,                       /* tx multiq */             \
+    SET_TX_MULTIQ,              /* tx multiq */             \
     SEND,                       /* send */                  \
     netdev_netmap_send_wait,                                \
     netdev_netmap_set_etheraddr,                            \
@@ -622,8 +634,8 @@ static const struct netdev_class netmap_class =
         netdev_netmap_construct,
         netdev_netmap_destruct,
         netdev_netmap_set_config,
-        NULL, //netdev_netmap_set_tx_multiq,
-        netdev_netmap_eth_send,
+        netdev_netmap_set_tx_multiq,
+        netdev_netmap_send,
         netdev_netmap_get_carrier,
         netdev_netmap_get_stats,
         NULL, //netdev_netmap_get_features,
