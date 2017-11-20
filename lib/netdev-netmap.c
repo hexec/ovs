@@ -58,7 +58,6 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 struct netdev_netmap {
     struct netdev up;
     struct nm_desc *nmd;
-    unsigned int space_sync;
     unsigned int nrx_sync;
     unsigned int ntx_sync;
 
@@ -361,56 +360,53 @@ netdev_netmap_send(struct netdev *netdev, int qid,
     }
 
     struct netmap_ring *ring;
-    uint16_t nr = 0, nrings = dev->nmd->last_rx_ring - dev->nmd->first_rx_ring + 1;
+    uint16_t nr = 0, nrings = dev->nmd->nifp->ni_tx_rings;
     unsigned int ntx  = 0;
-    uint16_t di;
+    bool sync = false;
 
     for (; nr < nrings; nr++) {
         unsigned int head;
         unsigned int space;
 
-        di = dev->nmd->cur_tx_ring;
-        ring = NETMAP_TXRING(dev->nmd->nifp, di);
+        ring = NETMAP_TXRING(dev->nmd->nifp, dev->nmd->cur_tx_ring);
         space = nm_ring_space(ring); /* Available slots in this ring. */
         head = ring->head;
 
-        VLOG_INFO("send: %d free slots on %d ring | cycle %d/%d", space, di, nr, nrings);
+        VLOG_INFO("send: %d free slots on %d ring | cycle %d/%d", space, dev->nmd->cur_tx_ring, nr, nrings-1);
 
-        /* If the current ring has less space than the burst, call txsync */
-        if (OVS_UNLIKELY(space <= NETDEV_MAX_BURST)) {
-
-            netmap_txsync(dev);
-
-            /* I know I will have to switch ring */
-            if ((space - batch->count) <= 0)
+        /* If the current ring has low space, call txsync in not already called */
+        if (OVS_UNLIKELY(space < NETDEV_MAX_BURST)) {
+            if (!sync) {
+                netmap_txsync(dev);
+                sync = true;
+            }
+            if (space == 0) {
                 dev->nmd->cur_tx_ring = (dev->nmd->cur_tx_ring + 1) % nrings;
-
-            if (space == 0)
                 continue;
+            }
         }
 
         /* Transmit batch in this ring as much as possible. */
-        for (; ntx < space; ntx++) {
+        for (; space > 0; space--, ntx++) {
                 struct netmap_slot *ts = &ring->slot[head];
-                struct dp_packet *packet;
-                char *txbuf;
+                struct dp_packet *packet = batch->packets[ntx];
+                ts->len = dp_packet_get_send_len(packet);
+                memcpy(NETMAP_BUF(ring, ts->buf_idx),
+                       dp_packet_data(packet),
+                       ts->len);
+                //nm_pkt_copy((void *) dp_packet_data(packet), (void *) buf, ts->len);
+                head = nm_ring_next(ring, head);
 
-                /* No more packets to send. */
-                if (OVS_UNLIKELY(ntx == batch->count)) {
+                /* No more packets to send in this batch. */
+                if (OVS_UNLIKELY((ntx+1) == batch->count)) {
                     ring->head = ring->cur = head;
                     goto free_batch;
                 }
-
-                packet = batch->packets[ntx];
-                txbuf  = NETMAP_BUF(ring, ts->buf_idx);
-
-                ts->len = dp_packet_get_send_len(packet);
-                memcpy(txbuf, dp_packet_data(packet), ts->len);
-                head = nm_ring_next(ring, head);
         }
         /* We still have packets to send,
-         * update ring head and switch to another one. */
+         * update ring head and select the next one. */
         ring->head = ring->cur = head;
+        dev->nmd->cur_tx_ring = (dev->nmd->cur_tx_ring + 1) % nrings;
     }
 
 free_batch:
@@ -430,15 +426,14 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 {
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
     struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
-    int qid = rxq->queue_id;
+    //int qid = rxq->queue_id;
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
         VLOG_INFO_RL(&rl, "rxq_recv: device down");
         return EAGAIN;
     }
 
-    uint16_t nr = 0, nrings = dev->nmd->last_rx_ring - dev->nmd->first_rx_ring + 1;
-    uint16_t ri;
+    uint16_t nr = 0, nrings = dev->nmd->nifp->ni_tx_rings;
     struct netmap_ring *ring;
     unsigned int nrx = 0;
     bool sync = false;
@@ -446,26 +441,26 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     for (; nr < nrings; nr++) {
         unsigned head, tail, space;
 
-        ri = dev->nmd->cur_rx_ring;
-        ring = NETMAP_RXRING(dev->nmd->nifp, ri);
+        ring = NETMAP_RXRING(dev->nmd->nifp, dev->nmd->cur_rx_ring);
         head = ring->head;
         tail = ring->tail;
         space = nm_ring_space(ring);
 
-        VLOG_INFO("rxq_recv: %d free slots on %d ring | cycle %d/%d", space, ri, nr, nrings);
+        VLOG_INFO_RL(&rl, "rxq_recv: %d free slots on %d ring | cycle %d/%d", space, dev->nmd->cur_rx_ring, nr, nrings-1);
 
-        if (space == 0) {
-            VLOG_INFO("rxq_recv: no space");
-            dev->nmd->cur_rx_ring = (dev->nmd->cur_rx_ring + 1) % nrings;
+        if (OVS_UNLIKELY(space < NETDEV_MAX_BURST)) {
             if (!sync) {
                 netmap_rxsync(dev);
                 sync = true;
             }
-            continue;
+            if (space == 0) {
+                dev->nmd->cur_rx_ring = (dev->nmd->cur_rx_ring + 1) % nrings;
+                continue;
+            }
         }
 
         while (head != tail && nrx < NETDEV_MAX_BURST) {
-            struct netmap_slot *slot = ring->slot + head;
+            struct netmap_slot *slot = &ring->slot[head];
             struct dp_packet *packet = dp_packet_new(slot->len);
             memcpy(dp_packet_data(packet),
                    NETMAP_BUF(ring, slot->buf_idx),
