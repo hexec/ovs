@@ -379,6 +379,7 @@ netdev_netmap_send(struct netdev *netdev, int qid,
             if (!sync) {
                 netmap_txsync(dev);
                 sync = true;
+                continue;
             }
             if (space == 0) {
                 dev->nmd->cur_tx_ring = (dev->nmd->cur_tx_ring + 1) % nrings;
@@ -411,7 +412,7 @@ netdev_netmap_send(struct netdev *netdev, int qid,
 
 free_batch:
     dp_packet_delete_batch(batch, may_steal);
-    VLOG_INFO("send batch: %d", ntx);
+    VLOG_INFO("send batch: %d", ntx+1);
     return error;
 }
 
@@ -433,7 +434,7 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         return EAGAIN;
     }
 
-    uint16_t nr = 0, nrings = dev->nmd->nifp->ni_tx_rings;
+    uint16_t nr = 0, nrings = dev->nmd->nifp->ni_rx_rings;
     struct netmap_ring *ring;
     unsigned int nrx = 0;
     bool sync = false;
@@ -452,6 +453,7 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             if (!sync) {
                 netmap_rxsync(dev);
                 sync = true;
+                continue;
             }
             if (space == 0) {
                 dev->nmd->cur_rx_ring = (dev->nmd->cur_rx_ring + 1) % nrings;
