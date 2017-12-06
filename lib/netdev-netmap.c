@@ -476,12 +476,6 @@ try_again:
         tail = ring->tail;
 
         //VLOG_INFO("send: %d free slots on %d ring | cycle %d/%d", space, dev->nmd->cur_tx_ring, nr, nrings-1);
-        VLOG_INFO("%d free slots for tx", space);
-
-        if (space == 0) {
-            dev->nmd->cur_tx_ring = (dev->nmd->cur_tx_ring + 1) % nrings;
-            continue;
-        }
 
         /* Transmit batch in this ring as much as possible. */
         while (head != tail) {
