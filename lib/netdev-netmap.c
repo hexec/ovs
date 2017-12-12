@@ -494,12 +494,12 @@ try_again:
                 struct dp_packet *packet = batch->packets[ntx];
                 struct netmap_slot *ts = &ring->slot[head];
                 struct netmap_slot *rs = &(NETMAP_RXRING(dev->nmd->nifp, packet->ring)->slot[packet->slot]);
-                //ts->len = dp_packet_get_send_len(packet);
                 //memcpy(NETMAP_BUF(ring, ts->buf_idx),
                 //       dp_packet_data(packet),
                 //       ts->len);
                 uint32_t idx = ts->buf_idx;
                 ts->buf_idx = rs->buf_idx;
+                ts->len = dp_packet_get_send_len(packet);
                 rs->buf_idx = idx;
                 ts->flags |= NS_BUF_CHANGED;
                 rs->flags |= NS_BUF_CHANGED;
