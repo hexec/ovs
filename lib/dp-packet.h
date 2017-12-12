@@ -39,8 +39,8 @@ enum OVS_PACKED_ENUM dp_packet_source {
     DPBUF_MALLOC,              /* Obtained via malloc(). */
     DPBUF_STACK,               /* Un-movable stack space or static buffer. */
     DPBUF_STUB,                /* Starts on stack, may expand into heap. */
-    DPBUF_DPDK,                /* buffer data is from DPDK allocated memory.
-                                * ref to dp_packet_init_dpdk() in dp-packet.c.
+    DPBUF_DPDK,                /* buffer data is from DPDK allocated memory. */
+    DPBUF_NETMAP,              /* ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
 };
 
@@ -60,6 +60,9 @@ struct dp_packet {
     uint32_t size_;             /* Number of bytes in use. */
     uint32_t rss_hash;          /* Packet hash. */
     bool rss_hash_valid;        /* Is the 'rss_hash' valid? */
+#endif
+#ifdef NETMAP_NETDEV
+    int ring, slot;
 #endif
     enum dp_packet_source source;  /* Source of memory allocated as 'base'. */
 
@@ -113,8 +116,10 @@ static inline const void *dp_packet_get_nd_payload(const struct dp_packet *);
 void dp_packet_use(struct dp_packet *, void *, size_t);
 void dp_packet_use_stub(struct dp_packet *, void *, size_t);
 void dp_packet_use_const(struct dp_packet *, const void *, size_t);
+void dp_packet_use_netmap(struct dp_packet *, const void *, size_t);
 
 void dp_packet_init_dpdk(struct dp_packet *, size_t allocated);
+void dp_packet_init_netmap(struct dp_packet *, size_t allocated, int ring, int slot);
 
 void dp_packet_init(struct dp_packet *, size_t);
 void dp_packet_uninit(struct dp_packet *);
@@ -173,6 +178,9 @@ dp_packet_delete(struct dp_packet *b)
              * created as a dp_packet */
             free_dpdk_buf((struct dp_packet*) b);
             return;
+        }
+        else if (b->source == DPBUF_NETMAP) {
+            /* Move cursors ? */
         }
 
         dp_packet_uninit(b);

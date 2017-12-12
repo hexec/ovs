@@ -92,6 +92,13 @@ dp_packet_use_const(struct dp_packet *b, const void *data, size_t size)
     dp_packet_set_size(b, size);
 }
 
+void
+dp_packet_use_netmap(struct dp_packet *b, const void *data, size_t size)
+{
+    dp_packet_use__(b, CONST_CAST(void *, data), size, DPBUF_NETMAP);
+    dp_packet_set_size(b, size);
+}
+
 /* Initializes 'b' as an empty dp_packet that contains the 'allocated' bytes.
  * DPDK allocated dp_packet and *data is allocated from one continous memory
  * region as part of memory pool, so in memory data start right after
@@ -103,6 +110,15 @@ dp_packet_init_dpdk(struct dp_packet *b, size_t allocated)
 {
     dp_packet_set_allocated(b, allocated);
     b->source = DPBUF_DPDK;
+}
+
+void
+dp_packet_init_netmap(struct dp_packet *b, size_t allocated, int ring, int slot)
+{
+    dp_packet_set_allocated(b, allocated);
+    b->source = DPBUF_NETMAP;
+    b->ring = ring;
+    b->slot = slot;
 }
 
 /* Initializes 'b' as an empty dp_packet with an initial capacity of 'size'
