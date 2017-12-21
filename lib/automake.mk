@@ -378,7 +378,9 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/route-table.c \
 	lib/route-table.h \
 	lib/tc.c \
-	lib/tc.h
+	lib/tc.h \
+	lib/tsc.c \
+	lib/tsc.h
 endif
 
 if DPDK_NETDEV

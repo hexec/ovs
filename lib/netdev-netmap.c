@@ -10,16 +10,16 @@
 #include <netinet/ip6.h>
 #include <sys/ioctl.h>
 
+#include <net/netmap.h>
+#define NETMAP_WITH_LIBS
+#include <net/netmap_user.h>
+#include "tsc.h"
 //debug
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 //
-
-#include <net/netmap.h>
-#define NETMAP_WITH_LIBS
-#include <net/netmap_user.h>
 
 #include "byte-order.h"
 #include "daemon.h"
@@ -62,11 +62,15 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 #define SOCKET0    0
 
-#define DEBUGTHREAD 1
+#define DEBUGTHREAD
+#define NETMAP_MAX_BURST 32
 
 struct netdev_netmap {
     struct netdev up;
     struct nm_desc *nmd;
+    uint64_t timestamp;
+    uint32_t foundempty;
+    struct dp_packet_batch **recycled_batches;
 
 #ifdef DEBUGTHREAD /* debug */
     unsigned long nrx_calls, ntx_calls;
@@ -150,13 +154,25 @@ static inline void netmap_txsync(struct netdev_netmap *dev)
     //VLOG_INFO("txsync(%d) %p.", dev->ntx_sync, (void*) dev);
 }
 
-static inline void netmap_rxsync(struct netdev_netmap *dev)
+static inline bool netmap_rxsync(struct netdev_netmap *dev)
 {
-    ioctl(dev->nmd->fd, NIOCRXSYNC, NULL);
+    uint64_t diff = rdtsc() - dev->timestamp;
+    unsigned int usecs = 1e6 * (diff) / (double) ticks_per_second;
+    if (usecs < 200 && dev->foundempty > 100) {
+        VLOG_INFO("tid: %d usecs: %d diff: %d foundempty: %d",
+                   (int) syscall(SYS_gettid), usecs, (unsigned int) diff, dev->foundempty);
+        if (dev->foundempty > 500)
+            usleep(1000);
+        else
+            usleep(1);
+        return false;
+    }
 #ifdef DEBUGTHREAD
     dev->nrx_sync++;
-#endif
     //VLOG_INFO("rxsync(%d) %p.", dev->nrx_sync, (void*) dev);
+#endif
+    ioctl(dev->nmd->fd, NIOCRXSYNC, NULL);
+    return true;
 }
 
 #ifdef DEBUGTHREAD
@@ -274,6 +290,12 @@ netdev_netmap_construct(struct netdev *netdev)
 
     dev->flags = NETDEV_UP | NETDEV_PROMISC;
 
+    VLOG_INFO("tsc ticks_per_second : %" PRIu64 "", ticks_per_second);
+    dev->timestamp = 0;
+    dev->foundempty = 0;
+
+    //dev->recycled_batches = (struct dp_packet_batch *) malloc( 1000 * sizeof (dp_packet_batch *));
+
     dev->nmd = nm_open(ifname, NULL, 0, NULL);
     if (!dev->nmd) {
         if (!errno) {
@@ -286,7 +308,6 @@ netdev_netmap_construct(struct netdev *netdev)
     } else {
         VLOG_INFO("opening \"%s\"", ifname);
     }
-
 
     netdev_request_reconfigure(netdev);
 
@@ -559,21 +580,18 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     unsigned int nrx = 0;
     unsigned space;
     int error = 0;
+    bool sync = false;
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
-        //VLOG_INFO_RL(&rl, "rxq_recv: device down");
         return EAGAIN;
     }
-
-    //if (strcmp(netdev_get_name(dev), "netmap:veth3") == 0)
-    //    return 0;
 
     for (nr = dev->nmd->first_rx_ring; nr < nrings; nr++) {
         ring = NETMAP_RXRING(dev->nmd->nifp, nr);
         /* If there is no data on this ring call rxsync */
-        if (nm_ring_space(ring) < NETDEV_MAX_BURST) {
-        //if (nm_ring_empty(ring)) {
-            netmap_rxsync(dev);
+        //if (nm_ring_space(ring) < NETDEV_MAX_BURST) {
+        if (nm_ring_empty(ring)) {
+            sync = netmap_rxsync(dev);
             break;
         }
     }
@@ -594,13 +612,13 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             //memcpy(dp_packet_data(packet),
             //       NETMAP_BUF(ring, slot->buf_idx),
             //       slot->len);
+            //dp_packet_set_size(packet, slot->len);
             dp_packet_use_netmap(packet, (void*) NETMAP_BUF(ring, slot->buf_idx), slot->len);
             dp_packet_init_netmap(packet, slot->len, dev->nmd->cur_rx_ring, head);
-            //dp_packet_set_size(packet, slot->len);
             dp_packet_batch_add(batch, packet);
             head = nm_ring_next(ring, head);
 
-            if (OVS_UNLIKELY((++nrx) >= NETDEV_MAX_BURST)) {
+            if (OVS_UNLIKELY((++nrx) >= NETMAP_MAX_BURST)) {
                 ring->cur = ring->head = head;
                 goto end_rx;
             }
@@ -616,11 +634,15 @@ end_rx:
 #endif
     if (nrx != 0) {
 #ifdef DEBUGTHREAD
+        //VLOG_INFO("rxq_recv_%d: %d", (int) syscall(SYS_gettid), nrx);
         dev->nrx_packets += nrx;
 #endif
+        dev->foundempty = 0;
         dp_packet_batch_init_packet_fields(batch);
-        //VLOG_INFO("rxq_recv_%d: %d", (int) syscall(SYS_gettid), nrx);
     } else {
+        dev->foundempty++;
+        if (sync)
+            dev->timestamp = rdtsc();
         error = EAGAIN;
     }
 

@@ -12,6 +12,8 @@
 #include "openvswitch/vlog.h"
 #include "smap.h"
 
+#include "tsc.h" /* to calibrate rdtsc */
+
 VLOG_DEFINE_THIS_MODULE(netmap);
 
 static void
@@ -35,6 +37,7 @@ netmap_init(const struct smap *ovs_other_config)
 
         if (ovsthread_once_start(&once_enable)) {
             VLOG_INFO("NETMAP Enabled - initializing...");
+            calibrate_tsc();
             netmap_init__(ovs_other_config);
             enabled = true;
             VLOG_INFO("NETMAP Enabled - initialized");

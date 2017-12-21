@@ -194,6 +194,14 @@ start_daemon () {
                 log_failure_msg "valgrind not installed, running $daemon without it"
             fi
             ;;
+        callgrind)
+            if (valgrind --version) > /dev/null 2>&1; then
+                set valgrind --tool=callgrind \
+                    --log-file="$logdir/$daemon.callgrind.log.%p" "$@"
+            else
+                log_failure_msg "valgrind not installed, running $daemon without it"
+            fi
+            ;;
         strace)
             if (strace -V) > /dev/null 2>&1; then
                 strace="strace -tt -T -s 256 -ff"
