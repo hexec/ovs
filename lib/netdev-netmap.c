@@ -1,6 +1,7 @@
 #include <config.h>
 
 #include "netdev-netmap.h"
+#include "netmap.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -13,7 +14,7 @@
 #include <net/netmap.h>
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
-#include "tsc.h"
+#include "netmap-utils.h"
 //debug
 #include <time.h>
 #include <pthread.h>
@@ -42,7 +43,7 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
-static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
+static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 100);
 
 #define ETHER_ADDR_LEN   6
 #define ETHER_TYPE_LEN   2
@@ -70,7 +71,9 @@ struct netdev_netmap {
     struct nm_desc *nmd;
     uint64_t timestamp;
     uint32_t foundempty;
-    struct dp_packet_batch **recycled_batches;
+    struct dp_packet_packets **recycled_packets;
+    uint32_t recycled_packets_num;
+    uint32_t recycled_packets_max;
 
 #ifdef DEBUGTHREAD /* debug */
     unsigned long nrx_calls, ntx_calls;
@@ -157,14 +160,14 @@ static inline void netmap_txsync(struct netdev_netmap *dev)
 static inline bool netmap_rxsync(struct netdev_netmap *dev)
 {
     uint64_t diff = rdtsc() - dev->timestamp;
-    unsigned int usecs = 1e6 * (diff) / (double) ticks_per_second;
-    if (usecs < 200 && dev->foundempty > 100) {
-        VLOG_INFO("tid: %d usecs: %d diff: %d foundempty: %d",
-                   (int) syscall(SYS_gettid), usecs, (unsigned int) diff, dev->foundempty);
-        if (dev->foundempty > 500)
-            usleep(1000);
-        else
-            usleep(1);
+    unsigned int usecs = TSC2US(diff);
+    if (usecs < 500 && dev->foundempty > 1000) {
+        //VLOG_INFO("tid: %d usecs: %d diff: %d foundempty: %d",
+        //           (int) syscall(SYS_gettid), usecs, (unsigned int) diff, dev->foundempty);
+
+        // just for testing,
+        // this is not correct we might put to sleep pmds with active ports
+        usleep(1);
         return false;
     }
 #ifdef DEBUGTHREAD
@@ -294,7 +297,9 @@ netdev_netmap_construct(struct netdev *netdev)
     dev->timestamp = 0;
     dev->foundempty = 0;
 
-    //dev->recycled_batches = (struct dp_packet_batch *) malloc( 1000 * sizeof (dp_packet_batch *));
+    //dev->recycled_packets_max = 10000;
+    //dev->recycled_packets = (struct dp_packet **) malloc( dev->recycled_packets_max * sizeof (struct dp_packet *));
+    //dev->recycled_packets_num = 0;
 
     dev->nmd = nm_open(ifname, NULL, 0, NULL);
     if (!dev->nmd) {
@@ -341,6 +346,7 @@ static void
 netdev_netmap_dealloc(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+    free(dev->recycled_packets);
     free(dev);
 }
 
@@ -557,7 +563,9 @@ end_tx:
     else {
         error = EAGAIN;
     }
-    dp_packet_delete_batch(batch, may_steal);
+
+    netmap_push_batch(batch);
+    //dp_packet_batch(batch);
 
     //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
 
@@ -589,8 +597,8 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     for (nr = dev->nmd->first_rx_ring; nr < nrings; nr++) {
         ring = NETMAP_RXRING(dev->nmd->nifp, nr);
         /* If there is no data on this ring call rxsync */
-        //if (nm_ring_space(ring) < NETDEV_MAX_BURST) {
-        if (nm_ring_empty(ring)) {
+        if (nm_ring_space(ring) < 4*NETDEV_MAX_BURST) {
+        //if (nm_ring_empty(ring)) {
             sync = netmap_rxsync(dev);
             break;
         }
@@ -608,14 +616,18 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 
         while (head != tail) {
             struct netmap_slot *slot = &ring->slot[head];
-            struct dp_packet *packet = dp_packet_new(0);
+            struct dp_packet *packet = netmap_pull_packet();
+            if (!packet)
+                packet = dp_packet_new(0);
+
             //memcpy(dp_packet_data(packet),
             //       NETMAP_BUF(ring, slot->buf_idx),
             //       slot->len);
             //dp_packet_set_size(packet, slot->len);
+
             dp_packet_use_netmap(packet, (void*) NETMAP_BUF(ring, slot->buf_idx), slot->len);
             dp_packet_init_netmap(packet, slot->len, dev->nmd->cur_rx_ring, head);
-            dp_packet_batch_add(batch, packet);
+            dp_packet_batch_add__(batch, packet, NETMAP_MAX_BURST);
             head = nm_ring_next(ring, head);
 
             if (OVS_UNLIKELY((++nrx) >= NETMAP_MAX_BURST)) {

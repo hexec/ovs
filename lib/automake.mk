@@ -378,9 +378,7 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/route-table.c \
 	lib/route-table.h \
 	lib/tc.c \
-	lib/tc.h \
-	lib/tsc.c \
-	lib/tsc.h
+	lib/tc.h
 endif
 
 if DPDK_NETDEV
@@ -395,7 +393,9 @@ endif
 if NETMAP_NETDEV
 lib_libopenvswitch_la_SOURCES += \
 	lib/netmap.c \
-	lib/netdev-netmap.c
+	lib/netdev-netmap.c \
+	lib/netmap-utils.c \
+	lib/netmap-utils.h
 else
 lib_libopenvswitch_la_SOURCES += \
 	lib/netmap-stub.c
