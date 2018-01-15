@@ -166,7 +166,7 @@ static inline bool netmap_rxsync(struct netdev_netmap *dev)
 
         // just for testing,
         // this is not correct we might put to sleep pmds with active ports
-        usleep(1);
+        //usleep(1);
         return false;
     }
 #ifdef DEBUGTHREAD
