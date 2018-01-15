@@ -25,6 +25,10 @@
 #include <rte_mbuf.h>
 #endif
 
+#ifdef NETMAP_NETDEV
+#include "netdev-netmap.h"
+#endif
+
 #include "netdev-dpdk.h"
 #include "openvswitch/list.h"
 #include "packets.h"
@@ -62,6 +66,7 @@ struct dp_packet {
     bool rss_hash_valid;        /* Is the 'rss_hash' valid? */
 #endif
 #ifdef NETMAP_NETDEV
+    struct netdev_netmap *dev;
     int ring, slot;
 #endif
     enum dp_packet_source source;  /* Source of memory allocated as 'base'. */
@@ -116,10 +121,10 @@ static inline const void *dp_packet_get_nd_payload(const struct dp_packet *);
 void dp_packet_use(struct dp_packet *, void *, size_t);
 void dp_packet_use_stub(struct dp_packet *, void *, size_t);
 void dp_packet_use_const(struct dp_packet *, const void *, size_t);
-void dp_packet_use_netmap(struct dp_packet *, const void *, size_t);
+void dp_packet_use_netmap(struct dp_packet *, void *, size_t);
 
 void dp_packet_init_dpdk(struct dp_packet *, size_t allocated);
-void dp_packet_init_netmap(struct dp_packet *, size_t allocated, int ring, int slot);
+void dp_packet_init_netmap(struct dp_packet *, size_t allocated, struct netdev_netmap*, int ring, int slot);
 
 void dp_packet_init(struct dp_packet *, size_t);
 void dp_packet_uninit(struct dp_packet *);
@@ -179,9 +184,9 @@ dp_packet_delete(struct dp_packet *b)
             free_dpdk_buf((struct dp_packet*) b);
             return;
         }
-        else if (b->source == DPBUF_NETMAP) {
-            /* Move cursors ? */
-        }
+//        else if (b->source == DPBUF_NETMAP) {
+
+//        }
 
         dp_packet_uninit(b);
         free(b);

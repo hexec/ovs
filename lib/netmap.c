@@ -37,7 +37,6 @@ netmap_init(const struct smap *ovs_other_config)
         if (ovsthread_once_start(&once_enable)) {
             VLOG_INFO("NETMAP Enabled - initializing...");
             calibrate_tsc();
-            netmap_init_recycle();
             netmap_init__(ovs_other_config);
             enabled = true;
             VLOG_INFO("NETMAP Enabled - initialized");

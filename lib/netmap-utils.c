@@ -9,12 +9,11 @@
 #include <unistd.h> /* read() */
 
 #include "netmap-utils.h"
-#include "dp-packet.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(netmap_utils);
 
-static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 100);
+//static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 100);
 
 /* initialize to avoid a division by 0 */
 uint64_t ticks_per_second = 1000000000; /* set by calibrate_tsc */
@@ -52,48 +51,3 @@ calibrate_tsc(void)
     ticks_per_second = cy;
     return cy;
 }
-
-struct ovs_mutex mutex_recycle;
-struct dp_packet **recycled_packets;
-int recycled_packets_num;
-
-void
-netmap_init_recycle()
-{
-    ovs_mutex_init(&mutex_recycle);
-    recycled_packets_num = -1;
-    recycled_packets = (struct dp_packet **) malloc( RECYCLED_MAX * sizeof (struct dp_packet *));
-}
-
-struct dp_packet*
-netmap_pull_packet()
-{
-    struct dp_packet *packet = NULL;
-
-    ovs_mutex_lock(&mutex_recycle);
-    if (recycled_packets_num >= 0)
-        packet = recycled_packets[recycled_packets_num--];
-    VLOG_INFO_RL(&rl, "pull from recycle: %d", recycled_packets_num);
-    ovs_mutex_unlock(&mutex_recycle);
-
-    return packet;
-}
-
-void
-netmap_push_batch(struct dp_packet_batch *batch)
-{
-    struct dp_packet *packet = NULL;
-
-    ovs_mutex_lock(&mutex_recycle);
-    DP_PACKET_BATCH_FOR_EACH (packet, batch) {
-        if (recycled_packets_num < RECYCLED_MAX) {
-            recycled_packets[++recycled_packets_num] = packet;
-            VLOG_INFO_RL(&rl, "push to recycle: %d", recycled_packets_num);
-        }
-        else
-            dp_packet_delete(packet);
-    }
-    dp_packet_batch_init(batch);
-    ovs_mutex_unlock(&mutex_recycle);
-}
-

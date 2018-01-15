@@ -55,25 +55,24 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 100);
 #define ETHER_MIN_MTU   68
 #define MTU_TO_FRAME_LEN(mtu)       ((mtu) + ETHER_HDR_LEN + ETHER_CRC_LEN)
 #define NETDEV_NETMAP_MAX_PKT_LEN     9728
-
 #define DEFAULT_RXQ_SIZE 2048
 #define DEFAULT_TXQ_SIZE 2048
-
 #define NR_QUEUE 1
-
 #define SOCKET0    0
 
 #define DEBUGTHREAD
 #define NETMAP_MAX_BURST 32
+#define RECYCLED_MAX 32
 
 struct netdev_netmap {
     struct netdev up;
     struct nm_desc *nmd;
+
     uint64_t timestamp;
     uint32_t foundempty;
+
     struct dp_packet_packets **recycled_packets;
-    uint32_t recycled_packets_num;
-    uint32_t recycled_packets_max;
+    int recycled_packets_num;
 
 #ifdef DEBUGTHREAD /* debug */
     unsigned long nrx_calls, ntx_calls;
@@ -297,9 +296,8 @@ netdev_netmap_construct(struct netdev *netdev)
     dev->timestamp = 0;
     dev->foundempty = 0;
 
-    //dev->recycled_packets_max = 10000;
-    //dev->recycled_packets = (struct dp_packet **) malloc( dev->recycled_packets_max * sizeof (struct dp_packet *));
-    //dev->recycled_packets_num = 0;
+    dev->recycled_packets_num = -1;
+    dev->recycled_packets = (struct dp_packet **) malloc( RECYCLED_MAX * sizeof (struct dp_packet *));
 
     dev->nmd = nm_open(ifname, NULL, 0, NULL);
     if (!dev->nmd) {
@@ -346,6 +344,7 @@ static void
 netdev_netmap_dealloc(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
+    // BUG free packets and array
     free(dev->recycled_packets);
     free(dev);
 }
@@ -486,6 +485,24 @@ netdev_netmap_set_config(const struct netdev *netdev, const struct smap *args,
     return 0;
 }
 
+void
+netmap_recycle_batch(struct dp_packet_batch *batch)
+{
+    struct dp_packet *packet = NULL;
+
+    //ovs_mutex_lock(&mutex_recycle);
+    DP_PACKET_BATCH_FOR_EACH (packet, batch) {
+        struct netdev_netmap *dev = packet->dev;
+        if (dev->recycled_packets_num < RECYCLED_MAX) {
+            dev->recycled_packets[++(dev->recycled_packets_num)] = packet;
+        }
+        else
+            dp_packet_delete(packet);
+    }
+    dp_packet_batch_init(batch);
+    //ovs_mutex_unlock(&mutex_recycle);
+}
+
 static int
 netdev_netmap_send(struct netdev *netdev, int qid,
                      struct dp_packet_batch *batch, bool may_steal,
@@ -520,10 +537,12 @@ try_again:
         while (head != tail) {
                 struct dp_packet *packet = batch->packets[ntx];
                 struct netmap_slot *ts = &ring->slot[head];
-                struct netmap_slot *rs = &(NETMAP_RXRING(dev->nmd->nifp, packet->ring)->slot[packet->slot]);
+                struct netmap_slot *rs = &(NETMAP_RXRING(packet->dev->nmd->nifp, packet->ring)->slot[packet->slot]);
+
                 //memcpy(NETMAP_BUF(ring, ts->buf_idx),
                 //       dp_packet_data(packet),
                 //       ts->len);
+
                 uint32_t idx = ts->buf_idx;
                 ts->buf_idx = rs->buf_idx;
                 ts->len = dp_packet_get_send_len(packet);
@@ -564,8 +583,8 @@ end_tx:
         error = EAGAIN;
     }
 
-    netmap_push_batch(batch);
-    //dp_packet_batch(batch);
+    netmap_recycle_batch(batch);
+    //dp_delete_batch(bath);
 
     //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
 
@@ -576,6 +595,21 @@ static void
 netdev_netmap_send_wait(struct netdev *netdev, int qid OVS_UNUSED)
 {
     //poll_immediate_wake();
+}
+
+struct dp_packet*
+netdev_netmap_get_packet(struct netdev_netmap *dev)
+{
+    struct dp_packet *packet = NULL;
+
+    //VLOG_INFO("recycle size: %d", dev->recycled_packets_num);
+    if (dev->recycled_packets_num >= 0) {
+        packet = dev->recycled_packets[(dev->recycled_packets_num)--];
+    } else {
+        packet = dp_packet_new(0);
+    }
+
+    return packet;
 }
 
 static int
@@ -616,17 +650,14 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 
         while (head != tail) {
             struct netmap_slot *slot = &ring->slot[head];
-            struct dp_packet *packet = netmap_pull_packet();
-            if (!packet)
-                packet = dp_packet_new(0);
-
+            struct dp_packet *packet = netdev_netmap_get_packet(dev);
             //memcpy(dp_packet_data(packet),
             //       NETMAP_BUF(ring, slot->buf_idx),
             //       slot->len);
             //dp_packet_set_size(packet, slot->len);
 
             dp_packet_use_netmap(packet, (void*) NETMAP_BUF(ring, slot->buf_idx), slot->len);
-            dp_packet_init_netmap(packet, slot->len, dev->nmd->cur_rx_ring, head);
+            dp_packet_init_netmap(packet, slot->len, dev, dev->nmd->cur_rx_ring, head);
             dp_packet_batch_add__(batch, packet, NETMAP_MAX_BURST);
             head = nm_ring_next(ring, head);
 

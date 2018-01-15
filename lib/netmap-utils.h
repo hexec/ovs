@@ -32,16 +32,4 @@ tsc_sleep_till(uint64_t when)
         barrier();
 }*/
 
-#define RECYCLED_MAX 32
-
-struct dp_packet;
-struct dp_packet_batch;
-extern struct ovs_mutex mutex_recycle;
-extern struct dp_packet **recycled_packets;
-extern int recycled_packets_num;
-
-void netmap_init_recycle();
-struct dp_packet* netmap_pull_packet();
-void netmap_push_batch(struct dp_packet_batch *batch);
-
 #endif /* __NETMAP_UTILS__ */
