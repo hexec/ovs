@@ -323,6 +323,7 @@ netdev_netmap_construct(struct netdev *netdev)
     }
 #endif
 
+    VLOG_INFO("netmap_construct : done");
     return 0;
 }
 
@@ -367,6 +368,7 @@ netdev_netmap_rxq_construct(struct netdev_rxq *rxq)
     ovs_mutex_lock(&dev->mutex);
     rx->nmd = dev->nmd;
     ovs_mutex_unlock(&dev->mutex);
+    VLOG_INFO("netmap_rxq_construct : done");
     return err;
 }
 
@@ -486,21 +488,22 @@ netdev_netmap_set_config(const struct netdev *netdev, const struct smap *args,
 }
 
 void
-netmap_recycle_batch(struct dp_packet_batch *batch)
+netmap_recycle_batch(struct netdev_netmap *dev, struct dp_packet_batch *batch)
 {
     struct dp_packet *packet = NULL;
 
-    //ovs_mutex_lock(&mutex_recycle);
+    //ovs_mutex_lock(&dev->mutex);
+    //VLOG_INFO("recycle size: %d", dev->recycled_packets_num);
     DP_PACKET_BATCH_FOR_EACH (packet, batch) {
         struct netdev_netmap *dev = packet->dev;
-        if (dev->recycled_packets_num < RECYCLED_MAX) {
+        if (packet->source == DPBUF_NETMAP && dev->recycled_packets_num < RECYCLED_MAX) {
             dev->recycled_packets[++(dev->recycled_packets_num)] = packet;
         }
         else
             dp_packet_delete(packet);
     }
     dp_packet_batch_init(batch);
-    //ovs_mutex_unlock(&mutex_recycle);
+    //ovs_mutex_unlock(&dev->mutex);
 }
 
 static int
@@ -515,7 +518,7 @@ netdev_netmap_send(struct netdev *netdev, int qid,
     unsigned int ntx = 0, space;
     bool again = false;
 
-    //VLOG_INFO_RL(&rl, "send : qid:%d, steal:%d, concurrent_txq:%d", qid, may_steal, concurrent_txq);
+    //VLOG_INFO("send_%s : qid:%d, steal:%d, concurrent_txq:%d", netdev_get_name(dev), qid, may_steal, concurrent_txq);
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
         error = EAGAIN;
@@ -537,19 +540,24 @@ try_again:
         while (head != tail) {
                 struct dp_packet *packet = batch->packets[ntx];
                 struct netmap_slot *ts = &ring->slot[head];
-                struct netmap_slot *rs = &(NETMAP_RXRING(packet->dev->nmd->nifp, packet->ring)->slot[packet->slot]);
+                if (packet->source != DPBUF_NETMAP) {
+                    VLOG_INFO("BOOM!");
+                }
+                else {
+                    struct netmap_slot *rs = &(NETMAP_RXRING(packet->dev->nmd->nifp, packet->ring)->slot[packet->slot]);
 
-                //memcpy(NETMAP_BUF(ring, ts->buf_idx),
-                //       dp_packet_data(packet),
-                //       ts->len);
+                    //memcpy(NETMAP_BUF(ring, ts->buf_idx),
+                    //       dp_packet_data(packet),
+                    //       ts->len);
 
-                uint32_t idx = ts->buf_idx;
-                ts->buf_idx = rs->buf_idx;
-                ts->len = dp_packet_get_send_len(packet);
-                rs->buf_idx = idx;
-                ts->flags |= NS_BUF_CHANGED;
-                rs->flags |= NS_BUF_CHANGED;
-                head = nm_ring_next(ring, head);
+                    uint32_t idx = ts->buf_idx;
+                    ts->buf_idx = rs->buf_idx;
+                    ts->len = dp_packet_get_send_len(packet);
+                    rs->buf_idx = idx;
+                    ts->flags |= NS_BUF_CHANGED;
+                    rs->flags |= NS_BUF_CHANGED;
+                    head = nm_ring_next(ring, head);
+                }
 
                 /* No more packets to send in this batch. */
                 if (OVS_UNLIKELY((++ntx) >= batch->count)) {
@@ -583,7 +591,7 @@ end_tx:
         error = EAGAIN;
     }
 
-    netmap_recycle_batch(batch);
+    netmap_recycle_batch(dev, batch);
     //dp_delete_batch(bath);
 
     //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
@@ -637,7 +645,10 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             break;
         }
     }
+    //if (strcmp(netdev_get_name(dev), "netmap:enp2s0f0") == 0)
+    //    return EAGAIN;
 
+    //ovs_mutex_lock(&dev->mutex);
     for (nr = 0; nr < nrings; nr++) {
         unsigned head, tail;
 
@@ -646,7 +657,7 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         tail = ring->tail;
         space = nm_ring_space(ring);
 
-        //VLOG_INFO_RL(&rl, "rxq_recv: %d free slots on %d ring | cycle %d/%d", space, dev->nmd->cur_rx_ring, nr, nrings-1);
+        //VLOG_INFO("rxq_recv_%s: %d slots found on %d ring | cycle %d/%d", netdev_get_name(dev), space, dev->nmd->cur_rx_ring, nr, nrings-1);
 
         while (head != tail) {
             struct netmap_slot *slot = &ring->slot[head];
@@ -672,6 +683,7 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     }
 
 end_rx:
+//ovs_mutex_unlock(&dev->mutex);
 #ifdef DEBUGTHREAD
     dev->nrx_calls++;
 #endif
@@ -872,7 +884,7 @@ netmap_set_rxq_config(struct netdev_netmap *dev, const struct smap *args)
 {
     int new_n_rxq;
 
-        new_n_rxq = 2; //MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
+        new_n_rxq = 1; //MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
     if (new_n_rxq != dev->requested_n_rxq) {
         dev->requested_n_rxq = new_n_rxq;
         netdev_request_reconfigure(&dev->up);
