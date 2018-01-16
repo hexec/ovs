@@ -541,7 +541,8 @@ try_again:
                 struct dp_packet *packet = batch->packets[ntx];
                 struct netmap_slot *ts = &ring->slot[head];
                 if (packet->source != DPBUF_NETMAP) {
-                    VLOG_INFO("BOOM!");
+                    // TODO convert packet
+                    VLOG_INFO_RL(&rl, "dropping packet, it is not a DPBUF_NETMAP");
                 }
                 else {
                     struct netmap_slot *rs = &(NETMAP_RXRING(packet->dev->nmd->nifp, packet->ring)->slot[packet->slot]);
