@@ -629,9 +629,9 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
     struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
     uint16_t nr = 0, nrings = dev->nmd->nifp->ni_rx_rings;
+    struct nm_desc *nmd = dev->nmd;
     struct netmap_ring *ring;
     unsigned int nrx = 0;
-    unsigned space;
     int error = 0;
     bool sync = false;
 
@@ -639,8 +639,8 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         return EAGAIN;
     }
 
-    for (nr = dev->nmd->first_rx_ring; nr < nrings; nr++) {
-        ring = NETMAP_RXRING(dev->nmd->nifp, nr);
+    for (nr = nmd->first_rx_ring; nr < nrings; nr++) {
+        ring = NETMAP_RXRING(nmd->nifp, nr);
         /* If there is no data on this ring call rxsync */
         if (nm_ring_space(ring) < 4*NETDEV_MAX_BURST) {
         //if (nm_ring_empty(ring)) {
@@ -648,19 +648,16 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             break;
         }
     }
-    //if (strcmp(netdev_get_name(dev), "netmap:enp2s0f0") == 0)
-    //    return EAGAIN;
 
-    //ovs_mutex_lock(&dev->mutex);
     for (nr = 0; nr < nrings; nr++) {
         unsigned head, tail;
 
-        ring = NETMAP_RXRING(dev->nmd->nifp, dev->nmd->cur_rx_ring);
+        ring = NETMAP_RXRING(nmd->nifp, nmd->cur_rx_ring);
         head = ring->head;
         tail = ring->tail;
-        space = nm_ring_space(ring);
 
-        //VLOG_INFO("rxq_recv_%s: %d slots found on %d ring | cycle %d/%d", netdev_get_name(dev), space, dev->nmd->cur_rx_ring, nr, nrings-1);
+        /* VLOG_INFO("rxq_recv_%s: %d slots found on %d ring | cycle %d/%d",
+         * netdev_get_name(dev), nm_ring_space(ring), nmd->cur_rx_ring, nr, nrings-1); */
 
         while (head != tail) {
             struct netmap_slot *slot = &ring->slot[head];
@@ -671,7 +668,7 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             //dp_packet_set_size(packet, slot->len);
 
             dp_packet_use_netmap(packet, (void*) NETMAP_BUF(ring, slot->buf_idx), slot->len);
-            dp_packet_init_netmap(packet, slot->len, dev, dev->nmd->cur_rx_ring, head);
+            dp_packet_init_netmap(packet, slot->len, dev, nmd->cur_rx_ring, head);
             dp_packet_batch_add__(batch, packet, NETMAP_MAX_BURST);
             head = nm_ring_next(ring, head);
 
@@ -682,11 +679,12 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         }
 
         ring->cur = ring->head = head;
-        dev->nmd->cur_rx_ring = (dev->nmd->cur_rx_ring + 1) % nrings;
+        if (OVS_UNLIKELY(++nmd->cur_rx_ring == nrings)) {
+            nmd->cur_rx_ring = 0;
+        }
     }
 
 end_rx:
-//ovs_mutex_unlock(&dev->mutex);
 #ifdef DEBUGTHREAD
     dev->nrx_calls++;
 #endif
