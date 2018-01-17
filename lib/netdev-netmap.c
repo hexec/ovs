@@ -293,7 +293,7 @@ netdev_netmap_construct(struct netdev *netdev)
     dev->flags = NETDEV_UP | NETDEV_PROMISC;
 
     VLOG_INFO("tsc ticks_per_second : %" PRIu64 "", ticks_per_second);
-    dev->timestamp = 0;
+    dev->timestamp = rdtsc();
     dev->foundempty = 0;
 
     dev->recycled_packets_num = -1;
@@ -345,7 +345,7 @@ static void
 netdev_netmap_dealloc(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
-    // BUG free packets and array
+    // TODO free packets pointed by the array elements
     free(dev->recycled_packets);
     free(dev);
 }
@@ -404,6 +404,8 @@ netdev_netmap_set_tx_multiq(struct netdev *netdev, unsigned int n_txq)
 static int
 netdev_netmap_class_init(void)
 {
+    /* Nothing to do for now, but we keep the same code structure
+     * used by DPDK. */
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
 
     if (ovsthread_once_start(&once)) {

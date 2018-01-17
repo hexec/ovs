@@ -46,8 +46,6 @@ calibrate_tsc(void)
         dmax = da + db;
     }
     }
-    //ND("dmax %llu, da %llu, db %llu, cy %llu", (_P64)dmax, (_P64)da,
-    //                                           (_P64)db, (_P64)cy);
     ticks_per_second = cy;
     return cy;
 }

@@ -43,9 +43,10 @@ enum OVS_PACKED_ENUM dp_packet_source {
     DPBUF_MALLOC,              /* Obtained via malloc(). */
     DPBUF_STACK,               /* Un-movable stack space or static buffer. */
     DPBUF_STUB,                /* Starts on stack, may expand into heap. */
-    DPBUF_DPDK,                /* buffer data is from DPDK allocated memory. */
-    DPBUF_NETMAP,              /* ref to dp_packet_init_dpdk() in dp-packet.c.
+    DPBUF_DPDK,                /* buffer data is from DPDK allocated memory.
+		                * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
+    DPBUF_NETMAP,              /* Buffers are from netmap allocated memory. */
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64
@@ -183,10 +184,10 @@ dp_packet_delete(struct dp_packet *b)
              * created as a dp_packet */
             free_dpdk_buf((struct dp_packet*) b);
             return;
+        } else if (b->source == DPBUF_NETMAP) {
+            /* Nothing to do as netmap buffers are deallocated
+             * only when the associated netmap port is closed. */
         }
-//        else if (b->source == DPBUF_NETMAP) {
-
-//        }
 
         dp_packet_uninit(b);
         free(b);
