@@ -1,3 +1,5 @@
+#! /bin/sh
+
 # Copyright (c) 2017 Red Hat, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,24 +14,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-use strict;
-use warnings;
-use Getopt::Long;
+case $0 in
+    */*) dir0=`echo "$0" | sed 's,/[^/]*$,,'` ;;
+    *) dir0=./ ;;
+esac
+. "$dir0/ovs-lib" || exit 1
 
-my ($check_dpdk) = 0;
-my ($disabled_print) = 0;
-
-Getopt::Long::Configure ("bundling");
-GetOptions("dpdk!" => \$check_dpdk) or exit(1);
-
-OUTER: while (<STDIN>) {
-    if (/@(begin|end)_dpdk@/) {
-        if (!$check_dpdk) {
-            $disabled_print = ! $disabled_print;
-        }
-        next;
-    }
-
-    print $_ unless $disabled_print;
+stop_ovsdb() {
+    systemctl --job-mode=ignore-dependencies stop ovsdb-server
 }
-exit 0;
+
+start_ovsdb() {
+    systemctl --job-mode=ignore-dependencies start ovsdb-server
+}
+
+stop_forwarding() {
+    systemctl --job-mode=ignore-dependencies stop ovs-vswitchd
+}
+
+start_forwarding() {
+    systemctl --job-mode=ignore-dependencies start ovs-vswitchd
+}
+
+add_managers() {
+    :
+}
+
+if [ "$1" = "force-reload-kmod" ]; then
+    force_reload_kmod
+else
+    restart
+fi
+
+exit 0

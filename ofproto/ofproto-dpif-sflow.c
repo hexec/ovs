@@ -32,7 +32,7 @@
 #include "openvswitch/ofpbuf.h"
 #include "ofproto.h"
 #include "packets.h"
-#include "poll-loop.h"
+#include "openvswitch/poll-loop.h"
 #include "ovs-router.h"
 #include "route-table.h"
 #include "sflow_api.h"
@@ -1199,8 +1199,8 @@ dpif_sflow_read_actions(const struct flow *flow,
 	    break;
 	case OVS_ACTION_ATTR_SAMPLE:
 	case OVS_ACTION_ATTR_CLONE:
-        case OVS_ACTION_ATTR_ENCAP_NSH:
-        case OVS_ACTION_ATTR_DECAP_NSH:
+        case OVS_ACTION_ATTR_PUSH_NSH:
+        case OVS_ACTION_ATTR_POP_NSH:
 	case OVS_ACTION_ATTR_UNSPEC:
 	case __OVS_ACTION_ATTR_MAX:
 	default:
@@ -1233,7 +1233,7 @@ dpif_sflow_encode_mpls_stack(SFLLabelStack *stack,
  * See http://sflow.org/sflow_version_5.txt "Input/Output port information"
  */
 static uint32_t
-dpif_sflow_cookie_num_outputs(const union user_action_cookie *cookie)
+dpif_sflow_cookie_num_outputs(const struct user_action_cookie *cookie)
 {
     uint32_t format = cookie->sflow.output & 0xC0000000;
     uint32_t port_n = cookie->sflow.output & 0x3FFFFFFF;
@@ -1248,9 +1248,9 @@ dpif_sflow_cookie_num_outputs(const union user_action_cookie *cookie)
 
 void
 dpif_sflow_received(struct dpif_sflow *ds, const struct dp_packet *packet,
-		    const struct flow *flow, odp_port_t odp_in_port,
-		    const union user_action_cookie *cookie,
-		    const struct dpif_sflow_actions *sflow_actions)
+                    const struct flow *flow, odp_port_t odp_in_port,
+                    const struct user_action_cookie *cookie,
+                    const struct dpif_sflow_actions *sflow_actions)
     OVS_EXCLUDED(mutex)
 {
     SFL_FLOW_SAMPLE_TYPE fs;
@@ -1283,9 +1283,9 @@ dpif_sflow_received(struct dpif_sflow *ds, const struct dp_packet *packet,
         fs.input = SFL_DS_INDEX(in_dsp->dsi);
     }
 
-    /* Make the assumption that the random number generator in the datapath converges
-     * to the configured mean, and just increment the samplePool by the configured
-     * sampling rate every time. */
+    /* Make the assumption that the random number generator in the
+     * datapath converges to the configured mean, and just increment the
+     * samplePool by the configured sampling rate every time. */
     sampler->samplePool += sfl_sampler_get_sFlowFsPacketSamplingRate(sampler);
 
     /* Sampled header. */

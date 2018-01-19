@@ -208,7 +208,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/perf-counter.h \
 	lib/perf-counter.c \
 	lib/poll-loop.c \
-	lib/poll-loop.h \
 	lib/process.c \
 	lib/process.h \
 	lib/pvector.c \
@@ -216,7 +215,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/random.c \
 	lib/random.h \
 	lib/rconn.c \
-	lib/rconn.h \
 	lib/rculist.h \
 	lib/reconnect.c \
 	lib/reconnect.h \
@@ -480,6 +478,7 @@ MAN_FRAGMENTS += \
 	lib/db-ctl-base.man \
 	lib/dpctl.man \
 	lib/memory-unixctl.man \
+	lib/netdev-dpdk-unixctl.man \
 	lib/ofp-version.man \
 	lib/ovs.tmac \
 	lib/service.man \

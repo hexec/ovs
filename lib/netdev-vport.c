@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <net/if.h>
+#include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/ip6.h>
 #include <sys/ioctl.h>
@@ -38,7 +39,7 @@
 #include "openvswitch/dynamic-string.h"
 #include "ovs-router.h"
 #include "packets.h"
-#include "poll-loop.h"
+#include "openvswitch/poll-loop.h"
 #include "route-table.h"
 #include "smap.h"
 #include "socket-util.h"
@@ -906,6 +907,7 @@ netdev_vport_get_ifindex(const struct netdev *netdev_)
     NULL,                       /* get_carrier_resets */    \
     NULL,                       /* get_miimon */            \
     get_stats,                                              \
+    NULL,                       /* get_custom_stats */      \
                                                             \
     NULL,                       /* get_features */          \
     NULL,                       /* set_advertisements */    \
