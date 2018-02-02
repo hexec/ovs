@@ -33,7 +33,7 @@
 #include "openvswitch/dynamic-string.h"
 #include "ovs-router.h"
 #include "packets.h"
-#include "poll-loop.h"
+//#include "poll-loop.h"
 #include "route-table.h"
 #include "smap.h"
 #include "socket-util.h"
@@ -220,7 +220,7 @@ debug_thread(void *ptr)
 }
 #endif
 
-int
+static int
 netdev_netmap_construct(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
@@ -232,7 +232,7 @@ netdev_netmap_construct(struct netdev *netdev)
     ovs_mutex_init(&dev->mutex);
     eth_addr_random(&dev->hwaddr);
 
-    dev->flags = 0;
+    dev->flags = NETDEV_UP | NETDEV_PROMISC;
 
     netdev->n_rxq = 0;
     netdev->n_txq = 0;
@@ -240,8 +240,6 @@ netdev_netmap_construct(struct netdev *netdev)
     dev->requested_n_txq = NR_QUEUE;
     dev->requested_rxq_size = DEFAULT_RXQ_SIZE;
     dev->requested_txq_size = DEFAULT_TXQ_SIZE;
-
-    dev->flags = NETDEV_UP | NETDEV_PROMISC;
 
     VLOG_INFO("tsc ticks_per_second : %" PRIu64 "", ticks_per_second);
     dev->timestamp = rdtsc();
@@ -332,7 +330,7 @@ netdev_netmap_rxq_construct(struct netdev_rxq *rxq)
 }
 
 static void
-netdev_netmap_rxq_destruct(struct netdev_rxq *rxq)
+netdev_netmap_rxq_destruct(struct netdev_rxq *rxq OVS_UNUSED)
 {
     /* struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq); */
 }
@@ -434,7 +432,7 @@ netdev_netmap_set_config(struct netdev *netdev, const struct smap *args,
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
-    VLOG_INFO("set_config");
+    //VLOG_INFO("set_config");
 
     ovs_mutex_lock(&netmap_mutex);
     ovs_mutex_lock(&dev->mutex);
@@ -492,8 +490,7 @@ netmap_recycle_batch(struct dp_packet_batch *batch)
 
 static int
 netdev_netmap_send(struct netdev *netdev, int qid,
-                     struct dp_packet_batch *batch, bool may_steal,
-                     bool concurrent_txq)
+                     struct dp_packet_batch *batch, bool concurrent_txq)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
     struct nm_desc *nmd = dev->nmd;
@@ -503,7 +500,7 @@ netdev_netmap_send(struct netdev *netdev, int qid,
     unsigned int ntx = 0;
     bool again = false;
 
-    //VLOG_INFO("send_%s : qid:%d, steal:%d, concurrent_txq:%d", netdev_get_name(dev), qid, may_steal, concurrent_txq);
+    //VLOG_INFO("send_%s : qid:%d, concurrent_txq:%d", netdev_get_name(dev), qid, concurrent_txq);
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
         goto end_tx;
@@ -529,16 +526,16 @@ try_again:
         while (space-- > 0) {
                 struct dp_packet *packet = batch->packets[ntx++];
                 struct netmap_slot *ts = &ring->slot[head];
-                if (packet->source != DPBUF_NETMAP) {
-                    // TODO convert packet
-                    VLOG_INFO_RL(&rl, "dropping packet, it is not a DPBUF_NETMAP");
-                    //memcpy(NETMAP_BUF(ring, ts->buf_idx),
-                    //       dp_packet_data(packet),
-                    //       ts->len);
-                    //dp_packet_delete(packet);
+                if (packet->source != DPBUF_NETMAP) { // || packet->count) {
+                    /* send packet copying data to the netmap slot */
+                    VLOG_INFO_RL(&rl, "copy packet");
+                    memcpy(NETMAP_BUF(ring, ts->buf_idx),
+                           dp_packet_data(packet),
+                           ts->len);
+                    dp_packet_delete(packet);
                 } else {
+                    /* send packet swapping the slot (zero copy) */
                     struct netmap_slot *rs = &(NETMAP_RXRING(packet->dev->nmd->nifp, packet->ring)->slot[packet->slot]);
-
                     uint32_t idx = ts->buf_idx;
                     ts->buf_idx = rs->buf_idx;
                     ts->len = dp_packet_get_send_len(packet);
@@ -590,7 +587,7 @@ end_tx:
 static void
 netdev_netmap_send_wait(struct netdev *netdev, int qid OVS_UNUSED)
 {
-    poll_immediate_wake();
+    //poll_immediate_wake();
 }
 
 static inline struct dp_packet*
@@ -611,7 +608,6 @@ netdev_netmap_get_packet(struct netdev_netmap *dev)
 static int
 netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 {
-    //struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
     struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
     struct nm_desc *nmd = dev->nmd;
     uint16_t r = 0, nrings = nmd->nifp->ni_rx_rings;
@@ -629,7 +625,7 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         totalspace += nm_ring_space(NETMAP_RXRING(nmd->nifp, r));
     }
 
-    if (totalspace <= 0) {
+    if (!totalspace) {
         netmap_rxsync(dev);
     }
 
@@ -650,12 +646,11 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 
         while (space-- > 0) {
             struct netmap_slot *slot = &ring->slot[head];
-            //VLOG_INFO("pre num %d rx %d", dev->recycled_packets_num, nrx);
             struct dp_packet *packet = (struct dp_packet *) netdev_netmap_get_packet(dev);
-            nrx++;
-            //VLOG_INFO("post num %d rx %d", dev->recycled_packets_num, nrx);
+
             dp_packet_init_netmap(packet, (void*) NETMAP_BUF(ring, slot->buf_idx), slot->len, dev, nmd->cur_rx_ring, head);
             dp_packet_batch_add__(batch, packet, NETDEV_MAX_BURST);
+
             head = nm_ring_next(ring, head);
         }
 
@@ -671,7 +666,7 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     }
 
 end_rx:
-    //nrx = NETDEV_MAX_BURST - budget;
+    nrx = NETDEV_MAX_BURST - budget;
     if (nrx != 0) {
         //VLOG_INFO("rxq_recv_%d: %d", (int) syscall(SYS_gettid), nrx);
 #ifdef DEBUGTHREAD
@@ -691,8 +686,8 @@ end_rx:
 static void
 netdev_netmap_rxq_wait(struct netdev_rxq *rxq)
 {
-    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
-    poll_fd_wait(rx->nmd->fd, POLLIN);
+    //struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
+    //poll_fd_wait(rx->nmd->fd, POLLIN);
 }
 
 static int
@@ -728,7 +723,7 @@ netdev_netmap_set_mtu(struct netdev *netdev, int mtu)
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
     if (mtu > NETMAP_RXRING(dev->nmd->nifp, 0)->nr_buf_size
-        || mtu <= 0) {
+        || mtu < ETH_HEADER_LEN) {
         VLOG_WARN("%s: unsupported MTU %d\n", dev->up.name, mtu);
         return EINVAL;
     }
@@ -750,7 +745,6 @@ netdev_netmap_set_etheraddr(struct netdev *netdev, const struct eth_addr mac)
 
     ovs_mutex_lock(&dev->mutex);
     dev->hwaddr = mac;
-    ovs_mutex_unlock(&dev->mutex);
     netdev_change_seq_changed(netdev);
 
     return 0;
@@ -769,16 +763,26 @@ netdev_netmap_get_etheraddr(const struct netdev *netdev, struct eth_addr *mac)
 }
 
 static int
-netdev_netmap_update_flags(struct netdev *netdev OVS_UNUSED,
-                          enum netdev_flags off,
-                          enum netdev_flags on OVS_UNUSED,
+netdev_netmap_update_flags(struct netdev *netdev,
+                          enum netdev_flags off, enum netdev_flags on,
                           enum netdev_flags *old_flagsp)
+    OVS_REQUIRES(dev->mutex)
 {
-    if (off & (NETDEV_UP | NETDEV_PROMISC)) {
-        return EOPNOTSUPP;
-    }
+    struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
-    *old_flagsp = NETDEV_UP | NETDEV_PROMISC;
+    ovs_mutex_lock(&dev->mutex);
+    //if ((off | on) & ~(NETDEV_UP | NETDEV_PROMISC)) {
+    //    return EINVAL;
+    //}
+
+    *old_flagsp = dev->flags;
+    dev->flags |= on;
+    dev->flags &= ~off;
+
+    //netdev_change_seq_changed(&dev->up);
+
+    ovs_mutex_unlock(&dev->mutex);
+
     return 0;
 }
 
@@ -865,6 +869,7 @@ netmap_set_rxq_config(struct netdev_netmap *dev, const struct smap *args)
     NULL,                       /* get_carrier_resets */    \
     NULL,                       /* get_miimon */            \
     GET_STATS,                                              \
+    NULL,                       /* get_custom_stats */      \
                                                             \
     NULL,                       /* get_features */          \
     NULL,                       /* set_advertisements */    \
