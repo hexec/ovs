@@ -1325,6 +1325,14 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
     return 0;
 }
 
+void
+conntrack_clear(struct dp_packet *packet)
+{
+    /* According to pkt_metadata_init(), ct_state == 0 is enough to make all of
+     * the conntrack fields invalid. */
+    packet->md.ct_state = 0;
+}
+
 static void
 set_mark(struct dp_packet *pkt, struct conn *conn, uint32_t val, uint32_t mask)
 {
@@ -3072,11 +3080,9 @@ repl_ftp_v6_addr(struct dp_packet *pkt, struct ct_addr v6_addr_rep,
         return 0;
     }
 
-    const char *rc;
     char v6_addr_str[IPV6_SCAN_LEN] = {0};
-    rc = inet_ntop(AF_INET6, &v6_addr_rep.ipv6_aligned, v6_addr_str,
-              IPV6_SCAN_LEN - 1);
-    ovs_assert(rc != NULL);
+    ovs_assert(inet_ntop(AF_INET6, &v6_addr_rep.ipv6_aligned, v6_addr_str,
+                         IPV6_SCAN_LEN - 1));
 
     size_t replace_addr_size = strlen(v6_addr_str);
 

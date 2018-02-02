@@ -35,6 +35,7 @@
 #include "unaligned.h"
 #include "util.h"
 #include "csum.h"
+#include "conntrack.h"
 
 /* Masked copy of an ethernet address. 'src' is already properly masked. */
 static void
@@ -197,10 +198,7 @@ odp_set_sctp(struct dp_packet *packet, const struct ovs_key_sctp *key,
 static void
 odp_set_tunnel_action(const struct nlattr *a, struct flow_tnl *tun_key)
 {
-    enum odp_key_fitness fitness;
-
-    fitness = odp_tun_key_from_attr(a, tun_key);
-    ovs_assert(fitness != ODP_FIT_ERROR);
+    ovs_assert(odp_tun_key_from_attr(a, tun_key) != ODP_FIT_ERROR);
 }
 
 static void
@@ -674,6 +672,7 @@ requires_datapath_assistance(const struct nlattr *a)
     case OVS_ACTION_ATTR_CLONE:
     case OVS_ACTION_ATTR_PUSH_NSH:
     case OVS_ACTION_ATTR_POP_NSH:
+    case OVS_ACTION_ATTR_CT_CLEAR:
         return false;
 
     case OVS_ACTION_ATTR_UNSPEC:
@@ -874,6 +873,11 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
             }
             break;
         }
+        case OVS_ACTION_ATTR_CT_CLEAR:
+            DP_PACKET_BATCH_FOR_EACH (packet, batch) {
+                conntrack_clear(packet);
+            }
+            break;
 
         case OVS_ACTION_ATTR_OUTPUT:
         case OVS_ACTION_ATTR_TUNNEL_PUSH:

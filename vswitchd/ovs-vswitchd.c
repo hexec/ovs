@@ -37,6 +37,7 @@
 #include "netdev.h"
 #include "openflow/openflow.h"
 #include "ovsdb-idl.h"
+#include "ovs-rcu.h"
 #include "openvswitch/poll-loop.h"
 #include "simap.h"
 #include "stream-ssl.h"
@@ -135,6 +136,8 @@ main(int argc, char *argv[])
     bridge_exit(cleanup);
     unixctl_server_destroy(unixctl);
     service_stop();
+    vlog_disable_async();
+    ovsrcu_exit();
 
     return 0;
 }
@@ -187,6 +190,7 @@ parse_options(int argc, char *argv[], char **unixctl_pathp)
 
         case 'V':
             ovs_print_version(0, 0);
+            print_dpdk_version();
             exit(EXIT_SUCCESS);
 
         case OPT_MLOCKALL:

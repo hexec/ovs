@@ -1039,7 +1039,7 @@ pinctrl_recv(const struct ofp_header *oh, enum ofptype type,
         if (VLOG_IS_DBG_ENABLED()) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(30, 300);
 
-            char *s = ofp_to_string(oh, ntohs(oh->length), NULL, 2);
+            char *s = ofp_to_string(oh, ntohs(oh->length), NULL, NULL, 2);
 
             VLOG_DBG_RL(&rl, "OpenFlow packet ignored: %s", s);
             free(s);
@@ -1371,6 +1371,7 @@ send_ipv6_ras(const struct controller_ctx *ctx, struct hmap *local_datapaths)
                 send_ipv6_ra_time = next_ra;
             }
         }
+        sbrec_port_binding_index_destroy_row(lpval);
     }
 
     /* Remove those that are no longer in the SB database */

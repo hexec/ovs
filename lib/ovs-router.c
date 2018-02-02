@@ -68,11 +68,7 @@ struct ovs_router_entry {
 static struct ovs_router_entry *
 ovs_router_entry_cast(const struct cls_rule *cr)
 {
-    if (offsetof(struct ovs_router_entry, cr) == 0) {
-        return CONTAINER_OF(cr, struct ovs_router_entry, cr);
-    } else {
-        return cr ? CONTAINER_OF(cr, struct ovs_router_entry, cr) : NULL;
-    }
+    return cr ? CONTAINER_OF(cr, struct ovs_router_entry, cr) : NULL;
 }
 
 static bool
@@ -245,19 +241,14 @@ ovs_router_insert(uint32_t mark, const struct in6_addr *ip_dst, uint8_t plen,
     ovs_router_insert__(mark, plen, ip_dst, plen, output_bridge, gw);
 }
 
-static bool
-__rt_entry_delete(const struct cls_rule *cr)
+static void
+rt_entry_delete__(const struct cls_rule *cr)
 {
     struct ovs_router_entry *p = ovs_router_entry_cast(cr);
 
     tnl_port_map_delete_ipdev(p->output_bridge);
-    /* Remove it. */
-    cr = classifier_remove(&cls, cr);
-    if (cr) {
-        ovsrcu_postpone(rt_entry_free, ovs_router_entry_cast(cr));
-        return true;
-    }
-    return false;
+    classifier_remove_assert(&cls, cr);
+    ovsrcu_postpone(rt_entry_free, ovs_router_entry_cast(cr));
 }
 
 static bool
@@ -277,8 +268,10 @@ rt_entry_delete(uint32_t mark, uint8_t priority,
     cr = classifier_find_rule_exactly(&cls, &rule, OVS_VERSION_MAX);
     if (cr) {
         ovs_mutex_lock(&mutex);
-        res = __rt_entry_delete(cr);
+        rt_entry_delete__(cr);
         ovs_mutex_unlock(&mutex);
+
+        res = true;
     }
 
     cls_rule_destroy(&rule);
@@ -476,7 +469,7 @@ ovs_router_flush(void)
     classifier_defer(&cls);
     CLS_FOR_EACH(rt, cr, &cls) {
         if (rt->priority == rt->plen) {
-            __rt_entry_delete(&rt->cr);
+            rt_entry_delete__(&rt->cr);
         }
     }
     classifier_publish(&cls);

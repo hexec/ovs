@@ -48,6 +48,18 @@ number of dpdk devices found in the log file::
     $ ovs-vsctl add-port br0 dpdk-p1 -- set Interface dpdk-p1 type=dpdk \
         options:dpdk-devargs=0000:01:00.1
 
+Some NICs (i.e. Mellanox ConnectX-3) have only one PCI address associated
+with multiple ports. Using a PCI device like above won't work. Instead, below
+usage is suggested::
+
+    $ ovs-vsctl add-port br0 dpdk-p0 -- set Interface dpdk-p0 type=dpdk \
+        options:dpdk-devargs="class=eth,mac=00:11:22:33:44:55:01"
+    $ ovs-vsctl add-port br0 dpdk-p1 -- set Interface dpdk-p1 type=dpdk \
+        options:dpdk-devargs="class=eth,mac=00:11:22:33:44:55:02"
+
+Note: such syntax won't support hotplug. The hotplug is supposed to work with
+future DPDK release, v18.05.
+
 After the DPDK ports get added to switch, a polling thread continuously polls
 DPDK devices and consumes 100% of the core, as can be checked from ``top`` and
 ``ps`` commands::
@@ -138,6 +150,17 @@ The rxqs will be assigned to cores 3,7,8 in the following order:
 Core 3: Q1 (80%) |
 Core 7: Q4 (70%) | Q5 (10%)
 core 8: Q3 (60%) | Q0 (30%)
+
+To see the current measured usage history of pmd core cycles for each rxq::
+
+    $ ovs-appctl dpif-netdev/pmd-rxq-show
+
+.. note::
+
+  A history of one minute is recorded and shown for each rxq to allow for
+  traffic pattern spikes. An rxq's pmd core cycles usage changes due to traffic
+  pattern or reconfig changes will take one minute before they are fully
+  reflected in the stats.
 
 Rxq to pmds assignment takes place whenever there are configuration changes
 or can be triggered by using::

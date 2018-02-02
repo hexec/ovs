@@ -118,6 +118,7 @@ odp_action_len(uint16_t type)
     case OVS_ACTION_ATTR_SET_MASKED: return ATTR_LEN_VARIABLE;
     case OVS_ACTION_ATTR_SAMPLE: return ATTR_LEN_VARIABLE;
     case OVS_ACTION_ATTR_CT: return ATTR_LEN_VARIABLE;
+    case OVS_ACTION_ATTR_CT_CLEAR: return 0;
     case OVS_ACTION_ATTR_PUSH_ETH: return sizeof(struct ovs_action_push_eth);
     case OVS_ACTION_ATTR_POP_ETH: return 0;
     case OVS_ACTION_ATTR_CLONE: return ATTR_LEN_VARIABLE;
@@ -1130,6 +1131,9 @@ format_odp_action(struct ds *ds, const struct nlattr *a,
         break;
     case OVS_ACTION_ATTR_CT:
         format_odp_conntrack_action(ds, a);
+        break;
+    case OVS_ACTION_ATTR_CT_CLEAR:
+        ds_put_cstr(ds, "ct_clear");
         break;
     case OVS_ACTION_ATTR_CLONE:
         format_odp_clone_action(ds, a, portno_names);
@@ -2281,6 +2285,13 @@ parse_odp_action(const char *s, const struct simap *port_names,
         if (ovs_scan(s, "tnl_pop(%"SCNi32")%n", &port, &n)) {
             nl_msg_put_u32(actions, OVS_ACTION_ATTR_TUNNEL_POP, port);
             return n;
+        }
+    }
+
+    {
+        if (!strncmp(s, "ct_clear", 8)) {
+            nl_msg_put_flag(actions, OVS_ACTION_ATTR_CT_CLEAR);
+            return 8;
         }
     }
 
@@ -6836,8 +6847,6 @@ commit_mpls_action(const struct flow *flow, struct flow *base,
             /* Otherwise, if there more LSEs in base than are common between
              * base and flow then pop the topmost one. */
             ovs_be16 dl_type;
-            bool popped;
-
             /* If all the LSEs are to be popped and this is not the outermost
              * LSE then use ETH_TYPE_MPLS as the ethertype parameter of the
              * POP_MPLS action instead of flow->dl_type.
@@ -6854,8 +6863,7 @@ commit_mpls_action(const struct flow *flow, struct flow *base,
                 dl_type = flow->dl_type;
             }
             nl_msg_put_be16(odp_actions, OVS_ACTION_ATTR_POP_MPLS, dl_type);
-            popped = flow_pop_mpls(base, base_n, flow->dl_type, NULL);
-            ovs_assert(popped);
+            ovs_assert(flow_pop_mpls(base, base_n, flow->dl_type, NULL));
             base_n--;
         }
     }
