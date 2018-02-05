@@ -485,11 +485,15 @@ netdev_netmap_send(struct netdev *netdev, int qid,
     unsigned int ntx = 0;
     bool again = false;
 
-    //VLOG_INFO("send_%s : qid:%d, concurrent_txq:%d", netdev_get_name(dev), qid, concurrent_txq);
+    //VLOG_INFO("send_%s : qid:%d, concurrent_txq:%d", (const char*) netdev_get_name(dev), qid, concurrent_txq);
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
         dp_packet_delete_batch(batch, true);
         return 0;
+    }
+
+    if (OVS_UNLIKELY(concurrent_txq)) {
+        ovs_mutex_lock(&dev->mutex);
     }
 
 try_again:
@@ -561,6 +565,10 @@ try_again:
 
     //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
 
+    if (OVS_UNLIKELY(concurrent_txq)) {
+        ovs_mutex_unlock(&dev->mutex);
+    }
+
     return 0;
 }
 
@@ -629,7 +637,6 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
         }
     }
 
-end_rx:
     //nrx = NETDEV_MAX_BURST - budget;
     if (nrx != 0) {
         //VLOG_INFO("rxq_recv_%d: %d", (int) syscall(SYS_gettid), nrx);
