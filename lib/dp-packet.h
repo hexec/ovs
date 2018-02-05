@@ -186,6 +186,7 @@ dp_packet_delete(struct dp_packet *b)
         } else if (b->source == DPBUF_NETMAP) {
             /* Nothing to do as netmap buffers are deallocated
              * only when the associated netmap port is closed. */
+            return;
         }
 
         dp_packet_uninit(b);
