@@ -23,6 +23,10 @@
 #include <sys/syscall.h>
 //
 
+#include "openvswitch/poll-loop.h"
+#include "openvswitch/vlog.h"
+
+#include "openvswitch/dynamic-string.h"
 #include "byte-order.h"
 #include "daemon.h"
 #include "dirs.h"
@@ -30,16 +34,13 @@
 #include "netdev.h"
 #include "netdev-native-tnl.h"
 #include "netdev-provider.h"
-#include "openvswitch/dynamic-string.h"
 #include "ovs-router.h"
 #include "packets.h"
-//#include "poll-loop.h"
 #include "route-table.h"
 #include "smap.h"
 #include "socket-util.h"
 #include "unaligned.h"
 #include "unixctl.h"
-#include "openvswitch/vlog.h"
 #include "netdev-tc-offloads.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
@@ -456,8 +457,7 @@ static inline void netmap_rxsync(struct netdev_netmap *dev)
     uint64_t now = rdtsc();
     unsigned int diff = TSC2US(now - dev->timestamp);
 
-    if ((dev->foundempty < 1000 && diff < 5) ||
-        (dev->foundempty >= 1000 && diff < 500)) {
+    if (diff < 10) {
         /* rxsync rate is too high */
         return;
     }
@@ -471,21 +471,6 @@ static inline void netmap_rxsync(struct netdev_netmap *dev)
     dev->nrx_sync++;
 #endif
     return;
-}
-
-static inline void
-netmap_recycle_batch(struct dp_packet_batch *batch)
-{
-    struct dp_packet *packet = NULL;
-
-    DP_PACKET_BATCH_FOR_EACH (packet, batch) {
-        struct netdev_netmap *dev = packet->dev;
-        if (packet->source == DPBUF_NETMAP && dev->recycled_packets_num < RECYCLED_MAX) {
-            dev->recycled_packets[++(dev->recycled_packets_num)] = packet;
-        }
-        else
-            dp_packet_delete(packet);
-    }
 }
 
 static int
@@ -503,7 +488,8 @@ netdev_netmap_send(struct netdev *netdev, int qid,
     //VLOG_INFO("send_%s : qid:%d, concurrent_txq:%d", netdev_get_name(dev), qid, concurrent_txq);
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
-        goto end_tx;
+        dp_packet_delete_batch(batch, true);
+        return 0;
     }
 
 try_again:
@@ -526,13 +512,11 @@ try_again:
         while (space-- > 0) {
                 struct dp_packet *packet = batch->packets[ntx++];
                 struct netmap_slot *ts = &ring->slot[head];
-                if (packet->source != DPBUF_NETMAP) { // || packet->count) {
+                if (OVS_UNLIKELY(packet->source != DPBUF_NETMAP)) { // || packet->count) {
                     /* send packet copying data to the netmap slot */
-                    VLOG_INFO_RL(&rl, "copy packet");
                     memcpy(NETMAP_BUF(ring, ts->buf_idx),
                            dp_packet_data(packet),
                            ts->len);
-                    dp_packet_delete(packet);
                 } else {
                     /* send packet swapping the slot (zero copy) */
                     struct netmap_slot *rs = &(NETMAP_RXRING(packet->dev->nmd->nifp, packet->ring)->slot[packet->slot]);
@@ -542,13 +526,14 @@ try_again:
                     rs->buf_idx = idx;
                     ts->flags |= NS_BUF_CHANGED;
                     rs->flags |= NS_BUF_CHANGED;
-                    head = nm_ring_next(ring, head);
                 }
+
+                head = nm_ring_next(ring, head);
         }
 
         ring->head = ring->cur = head;
 
-        if (!budget) {
+        if (OVS_LIKELY(!budget)) {
             break;
         }
 
@@ -559,25 +544,20 @@ try_again:
         }
     }
 
-    if (OVS_UNLIKELY(ntx == 0 && !again)) {
-        netmap_txsync(dev);
+    netmap_txsync(dev);
+    if (OVS_UNLIKELY(!ntx && !again)) {
         again = true;
         goto try_again;
     }
 
-end_tx:
 #ifdef DEBUGTHREAD
     dev->ntx_calls++;
+    dev->ntx_packets+=ntx;
 #endif
-    if (OVS_LIKELY(ntx)) {
-#ifdef DEBUGTHREAD
-        dev->ntx_packets+=ntx;
-#endif
-        netmap_txsync(dev);
-    }
 
-    netmap_recycle_batch(batch);
-    dp_packet_batch_init(batch);
+    /* it actually deletes the batch if contains non netmap packets,
+     * it is used also to clean the batch. */
+    dp_packet_delete_batch(batch, true);
 
     //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
 
@@ -587,22 +567,7 @@ end_tx:
 static void
 netdev_netmap_send_wait(struct netdev *netdev, int qid OVS_UNUSED)
 {
-    //poll_immediate_wake();
-}
-
-static inline struct dp_packet*
-netdev_netmap_get_packet(struct netdev_netmap *dev)
-{
-    struct dp_packet *packet = NULL;
-
-    //VLOG_INFO("recycle size: %d", dev->recycled_packets_num);
-    if (dev->recycled_packets_num >= 0) {
-        packet = (struct dp_packet *) dev->recycled_packets[(dev->recycled_packets_num)--];
-    } else {
-        packet = dp_packet_new(0);
-    }
-
-    return packet;
+    poll_immediate_wake();
 }
 
 static int
@@ -646,10 +611,9 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 
         while (space-- > 0) {
             struct netmap_slot *slot = &ring->slot[head];
-            struct dp_packet *packet = (struct dp_packet *) netdev_netmap_get_packet(dev);
-
+            struct dp_packet *packet = (struct dp_packet *) dev->recycled_packets[nrx++];
             dp_packet_init_netmap(packet, (void*) NETMAP_BUF(ring, slot->buf_idx), slot->len, dev, nmd->cur_rx_ring, head);
-            dp_packet_batch_add__(batch, packet, NETDEV_MAX_BURST);
+            dp_packet_batch_add(batch, packet);
 
             head = nm_ring_next(ring, head);
         }
@@ -666,17 +630,17 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
     }
 
 end_rx:
-    nrx = NETDEV_MAX_BURST - budget;
+    //nrx = NETDEV_MAX_BURST - budget;
     if (nrx != 0) {
         //VLOG_INFO("rxq_recv_%d: %d", (int) syscall(SYS_gettid), nrx);
 #ifdef DEBUGTHREAD
         dev->nrx_packets += nrx;
         dev->nrx_calls++;
 #endif
-        dev->foundempty = 0;
+        //dev->foundempty = 0;
         dp_packet_batch_init_packet_fields(batch);
     } else {
-        dev->foundempty++;
+        //dev->foundempty++;
         error = EAGAIN;
     }
 
@@ -686,8 +650,8 @@ end_rx:
 static void
 netdev_netmap_rxq_wait(struct netdev_rxq *rxq)
 {
-    //struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
-    //poll_fd_wait(rx->nmd->fd, POLLIN);
+    struct netdev_rxq_netmap *rx = netdev_rxq_netmap_cast(rxq);
+    poll_fd_wait(rx->nmd->fd, POLLIN);
 }
 
 static int
