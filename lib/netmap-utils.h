@@ -6,6 +6,7 @@
 extern uint64_t ticks_per_second;
 #define US2TSC(x) ((x)*ticks_per_second/1000000UL)
 #define TSC2US(x) ((x)*1000000UL/ticks_per_second)
+
 uint64_t calibrate_tsc(void);
 
 #if 0 /* gcc intrinsic */
@@ -21,13 +22,24 @@ rdtsc(void)
 }
 #endif
 
-//#define barrier() asm volatile ("" ::: "memory")
+struct netmap_spinlock_t {
+    pthread_spinlock_t lock;
+};
 
-/*static inline void
+int netmap_spin_create(struct netmap_spinlock_t* l);
+int netmap_spin_lock(struct netmap_spinlock_t* l);
+int netmap_spin_unlock(struct netmap_spinlock_t* l);
+int netmap_spin_destroy(struct netmap_spinlock_t* l);
+
+/*
+#define barrier() asm volatile ("" ::: "memory")
+
+static inline void
 tsc_sleep_till(uint64_t when)
 {
     while (rdtsc() < when)
         barrier();
-}*/
+}
+*/
 
 #endif /* __NETMAP_UTILS__ */

@@ -1,69 +1,51 @@
 #include <config.h>
 
-#include "netdev-netmap.h"
-#include "netmap.h"
-
 #include <errno.h>
-#include <fcntl.h>
-#include <sys/socket.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <netinet/ip6.h>
-#include <sys/ioctl.h>
-
 #include <net/netmap.h>
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
-#include "netmap-utils.h"
+#include <sys/ioctl.h>
 
-//debug
+/* debug */
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/syscall.h>
-//
+/* end debug */
 
-#include "openvswitch/poll-loop.h"
-#include "openvswitch/vlog.h"
-
-#include "openvswitch/dynamic-string.h"
-#include "byte-order.h"
-#include "daemon.h"
-#include "dirs.h"
 #include "dpif.h"
 #include "netdev.h"
-#include "netdev-native-tnl.h"
 #include "netdev-provider.h"
-#include "ovs-router.h"
+#include "netmap.h"
+#include "netdev-netmap.h"
+#include "netmap-utils.h"
+#include "openvswitch/poll-loop.h"
+#include "openvswitch/vlog.h"
 #include "packets.h"
-#include "route-table.h"
 #include "smap.h"
-#include "socket-util.h"
-#include "unaligned.h"
-#include "unixctl.h"
-#include "netdev-tc-offloads.h"
+
+#define NR_QUEUE 1
+#define DEBUGTHREAD
+#define DEFAULT_RXQ_SIZE 2048
+#define DEFAULT_TXQ_SIZE 2048
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 100);
-
-#define NR_QUEUE 1
-#define DEBUGTHREAD
-#define RECYCLED_MAX NETDEV_MAX_BURST*2
-#define DEFAULT_RXQ_SIZE 2048
-#define DEFAULT_TXQ_SIZE 2048
 
 struct netdev_netmap {
     struct netdev up;
     struct nm_desc *nmd;
 
     uint64_t timestamp;
-    uint32_t foundempty;
+    //uint32_t foundempty;
 
     struct dp_packet **recycled_packets;
     int recycled_packets_num;
 
-#ifdef DEBUGTHREAD /* debug */
+#ifdef DEBUGTHREAD /* debug info data */
     unsigned long nrx_calls, ntx_calls;
     unsigned long nrx_sync, ntx_sync;
     unsigned long nrx_packets, ntx_packets;
@@ -97,6 +79,8 @@ struct netdev_rxq_netmap {
 };
 
 static struct ovs_mutex netmap_mutex = OVS_MUTEX_INITIALIZER;
+
+static struct netmap_spinlock_t spinlock;
 
 static void netdev_netmap_destruct(struct netdev *netdev);
 
@@ -231,6 +215,8 @@ netdev_netmap_construct(struct netdev *netdev)
     }
 
     ovs_mutex_init(&dev->mutex);
+    netmap_spin_create(&spinlock);
+
     eth_addr_random(&dev->hwaddr);
 
     dev->flags = NETDEV_UP | NETDEV_PROMISC;
@@ -244,11 +230,11 @@ netdev_netmap_construct(struct netdev *netdev)
 
     VLOG_INFO("tsc ticks_per_second : %" PRIu64 "", ticks_per_second);
     dev->timestamp = rdtsc();
-    dev->foundempty = 0;
+    /* dev->foundempty = 0; */
 
-    dev->recycled_packets_num = RECYCLED_MAX - 1;
-    dev->recycled_packets = (struct dp_packet **) malloc( RECYCLED_MAX * sizeof (struct dp_packet *));
-    for (int i = 0; i < RECYCLED_MAX ; i++) {
+    dev->recycled_packets_num = NETDEV_MAX_BURST - 1;
+    dev->recycled_packets = (struct dp_packet **) malloc( NETDEV_MAX_BURST * sizeof (struct dp_packet *));
+    for (int i = 0; i < NETDEV_MAX_BURST ; i++) {
         dev->recycled_packets[i] = dp_packet_new(0);
     }
 
@@ -295,6 +281,7 @@ netdev_netmap_destruct(struct netdev *netdev)
     pthread_cancel(dev->dbg_thread);
 #endif
     ovs_mutex_destroy(&dev->mutex);
+    netmap_spin_destroy(&spinlock);
 }
 
 static void
@@ -302,7 +289,7 @@ netdev_netmap_dealloc(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
 
-    for (int i = 0; i < RECYCLED_MAX; i++)
+    for (int i = 0; i < NETDEV_MAX_BURST; i++)
         free(dev->recycled_packets[i]);
     free(dev->recycled_packets);
     free(dev);
@@ -493,7 +480,7 @@ netdev_netmap_send(struct netdev *netdev, int qid,
     }
 
     if (OVS_UNLIKELY(concurrent_txq)) {
-        ovs_mutex_lock(&dev->mutex);
+        netmap_spin_lock(&spinlock);
     }
 
 try_again:
@@ -566,7 +553,7 @@ try_again:
     //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
 
     if (OVS_UNLIKELY(concurrent_txq)) {
-        ovs_mutex_unlock(&dev->mutex);
+        netmap_spin_unlock(&spinlock);
     }
 
     return 0;
