@@ -31,7 +31,7 @@
 #define DEBUGTHREAD
 #define DEFAULT_RXQ_SIZE 2048
 #define DEFAULT_TXQ_SIZE 2048
-#define RECYCLED_DP_PACKETS_NUM 32 * NETDEV_MAX_BURST
+#define RECYCLED_DP_PACKETS_NUM 2048
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
@@ -266,7 +266,7 @@ static void netmap_recycle_batch_prepare(struct dp_packet **head, struct dp_pack
 
 static inline void netmap_recycle_init(struct netdev_netmap* dev) {
     dev->recycled_list = NULL;
-    dev->recycled_count = netmap_recycle_refill(&dev->recycled_list, 
+    dev->recycled_count = netmap_recycle_refill(&dev->recycled_list,
                                                 RECYCLED_DP_PACKETS_NUM);
 }
 
@@ -563,29 +563,36 @@ try_again:
         //VLOG_INFO("send: %d free slots on %d ring | cycle %d/%d", space, nmd->cur_tx_ring, r, nrings-1);
 
         /* Transmit batch in this ring as much as possible. */
-        while (space-- > 0) {
-                struct dp_packet *packet = batch->packets[ntx++];
-                struct netmap_slot *ts = &ring->slot[head];
-                /* TODO check only the first one */
-                if (OVS_UNLIKELY(packet->source != DPBUF_NETMAP)) { // || packet->count) {
-                    /* send packet copying data to the netmap slot */
-                    memcpy(NETMAP_BUF(ring, ts->buf_idx),
-                           dp_packet_data(packet),
-                           ts->len);
-                } else {
-                    /* send packet swapping the slot (zero copy) */
-                    struct netmap_slot *rs = 
-                        &(NETMAP_RXRING(packet->nm_info.nmd->nifp,
-                            packet->nm_info.ring)->slot[packet->nm_info.slot]);
-                    uint32_t idx = ts->buf_idx;
-                    ts->buf_idx = rs->buf_idx;
-                    ts->len = dp_packet_get_send_len(packet);
-                    rs->buf_idx = idx;
-                    ts->flags |= NS_BUF_CHANGED;
-                    rs->flags |= NS_BUF_CHANGED;
-                }
-
+        struct dp_packet *packet;
+        struct netmap_slot *ts;
+        struct netmap_slot *rs;
+        uint32_t idx;
+        if (OVS_UNLIKELY(batch->packets[0]->source != DPBUF_NETMAP)) {
+            while (space--) {
+                packet = batch->packets[ntx++];
+                ts = &ring->slot[head];
+                ts->len = dp_packet_get_send_len(packet);
+                /* send packet copying data to the netmap slot */
+                memcpy(NETMAP_BUF(ring, ts->buf_idx),
+                       dp_packet_data(packet),
+                       ts->len);
                 head = nm_ring_next(ring, head);
+            }
+         } else {
+             while (space--) {
+                packet = batch->packets[ntx++];
+                ts = &ring->slot[head];
+                /* send packet swapping the slot (zero copy) */
+                rs = &(NETMAP_RXRING(packet->nm_info.nmd->nifp,
+                     packet->nm_info.ring)->slot[packet->nm_info.slot]);
+                ts->len = dp_packet_get_send_len(packet);
+                idx = ts->buf_idx;
+                ts->buf_idx = rs->buf_idx;
+                rs->buf_idx = idx;
+                ts->flags |= NS_BUF_CHANGED;
+                rs->flags |= NS_BUF_CHANGED;
+                head = nm_ring_next(ring, head);
+            }
         }
 
         ring->head = ring->cur = head;
@@ -605,14 +612,14 @@ try_again:
         goto try_again;
     }
 
+    /* it actually deletes the batch if contains non netmap packets,
+     * it is used also to clean the batch. */
+    dp_packet_delete_batch(batch, true);
+
 #ifdef DEBUGTHREAD
     dev->ntx_calls++;
     dev->ntx_packets+=ntx;
 #endif
-
-    /* it actually deletes the batch if contains non netmap packets,
-     * it is used also to clean the batch. */
-    dp_packet_delete_batch(batch, true);
 
     //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
 
