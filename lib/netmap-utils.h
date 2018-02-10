@@ -7,7 +7,7 @@ extern uint64_t ticks_per_second;
 #define US2TSC(x) ((x)*ticks_per_second/1000000UL)
 #define TSC2US(x) ((x)*1000000UL/ticks_per_second)
 
-uint64_t calibrate_tsc(void);
+uint64_t netmap_calibrate_tsc(void);
 
 #if 0 /* gcc intrinsic */
 #include <x86intrin.h>

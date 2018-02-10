@@ -106,11 +106,13 @@ dp_packet_init_dpdk(struct dp_packet *b, size_t allocated)
 }
 
 void
-dp_packet_init_netmap(struct dp_packet *b, void *data, size_t size, struct netmap_dp_packet_info info)
+dp_packet_init_netmap(struct dp_packet *b, void *data, size_t size, struct netmap_info* info, uint16_t ring, uint32_t slot)
 {
     dp_packet_use__(b, data, size, DPBUF_NETMAP);
     dp_packet_set_size(b, size);
     b->nm_info = info;
+    b->ring = ring;
+    b->slot = slot;
 }
 
 /* Initializes 'b' as an empty dp_packet with an initial capacity of 'size'

@@ -66,7 +66,11 @@ struct dp_packet {
     bool rss_hash_valid;        /* Is the 'rss_hash' valid? */
 #endif
 #ifdef NETMAP_NETDEV
-    struct netmap_dp_packet_info nm_info;
+    struct netmap_info* nm_info;  /* Contains information of a netmap port
+                                     that has created this dp-packet. */
+    struct dp_packet* next;       /* dp_packet list for the recycle. */
+    uint16_t ring;                /* Netmap ring that contains data. */
+    uint32_t slot;                /* Netmap slot that contains data. */
 #endif
     enum dp_packet_source source;  /* Source of memory allocated as 'base'. */
 
@@ -122,7 +126,7 @@ void dp_packet_use_stub(struct dp_packet *, void *, size_t);
 void dp_packet_use_const(struct dp_packet *, const void *, size_t);
 
 void dp_packet_init_dpdk(struct dp_packet *, size_t allocated);
-void dp_packet_init_netmap(struct dp_packet *, void *, size_t allocated, struct netmap_dp_packet_info);
+void dp_packet_init_netmap(struct dp_packet *, void *, size_t allocated, struct netmap_info*, uint16_t, uint32_t);
 
 void dp_packet_init(struct dp_packet *, size_t);
 void dp_packet_uninit(struct dp_packet *);
@@ -185,8 +189,9 @@ dp_packet_delete(struct dp_packet *b)
             /* We don't actually delete the dp_packet, we'll put it back
              * to the netdev's list to be recycled.
              * It will be freed when the port is also freed. */
-             b->nm_info.next = *b->nm_info.recycled_list;
-             *b->nm_info.recycled_list = b;
+             b->next = *b->nm_info->recycled_list;
+             *b->nm_info->recycled_list = b;
+             *b->nm_info->recycled_count++;
              return;
         }
 

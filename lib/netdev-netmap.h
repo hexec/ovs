@@ -4,11 +4,10 @@
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 
-struct netmap_dp_packet_info {
-    struct dp_packet** recycled_list;
-    struct dp_packet* next;
+struct netmap_info {
     struct nm_desc* nmd;
-    unsigned int ring, slot;
+    struct dp_packet** recycled_list;
+    unsigned int* recycled_count;
 };
 
 void netdev_netmap_register(void);
