@@ -4,6 +4,8 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <net/netmap.h>
+#define NETMAP_WITH_LIBS
+#include <net/netmap_user.h>
 #include <sys/ioctl.h>
 
 /* debug */
@@ -25,34 +27,33 @@
 #include "packets.h"
 #include "smap.h"
 
-//#define DEBUGTHREAD
+#define DEBUGTHREAD
 #define DEFAULT_RXQ_SIZE 2048
 #define DEFAULT_TXQ_SIZE 2048
 #define NR_QUEUE 1
-#define RECYCLED_DP_PACKETS_NUM 1024
-#define RECYCLED_DP_PACKETS_MAX 2048
+
+#define NM_ALLOC_RING_SIZE 128
+#define NM_ALLOC_RINGS_INIT 16
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
 
-static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 100);
+static struct vlog_rate_limit rl OVS_UNUSED = VLOG_RATE_LIMIT_INIT(5, 100);
 
 struct netdev_netmap {
     struct netdev up;
     struct nm_desc *nmd;
-
-    // TODO try to use struct ovs_list recycled_list;
-    struct dp_packet* recycled_list;
-    unsigned int recycled_count;
-    struct netmap_info info;
+    struct nm_alloc_ring* nmr;
+    struct nm_alloc_ring* nmr_b;
+    struct nm_info nmi;
 
     uint32_t rxsync_rate_usecs;
     uint64_t timestamp;
     //uint32_t foundempty;
 
 #ifdef DEBUGTHREAD /* debug info data */
-    unsigned long nrx_calls, ntx_calls;
-    unsigned long nrx_sync, ntx_sync;
-    unsigned long nrx_packets, ntx_packets;
+    uint64_t nrx_calls, ntx_calls;
+    uint64_t nrx_sync, ntx_sync;
+    uint64_t nrx_packets, ntx_packets;
     pthread_t dbg_thread;
 #endif
 
@@ -64,22 +65,43 @@ struct netdev_netmap {
     struct eth_addr hwaddr;
     enum netdev_flags flags;
 
+    int requested_mtu;
+    /*
     int n_txq;
     int n_rxq;
     int rxq_size;
     int txq_size;
 
-    int requested_socket_id;
-    int requested_mtu;
     int requested_n_txq;
     int requested_n_rxq;
     int requested_rxq_size;
     int requested_txq_size;
-};
+    */
+    };
 
 struct netdev_rxq_netmap {
     struct netdev_rxq up;
     struct nm_desc *nmd;
+};
+
+struct nm_alloc_ring {
+    struct dp_packet* ring[NM_ALLOC_RING_SIZE];
+    struct nm_alloc_ring* next;
+    uint16_t head;
+    uint16_t tail;
+};
+
+struct nm_alloc {
+    struct nm_alloc_ring* rlist;
+    struct nm_alloc_ring* rlist_b;
+    uint16_t nrings;
+    /* possible locks */
+};
+
+static struct nm_alloc nma = {
+    NULL,
+    NULL,
+    0
 };
 
 static struct ovs_mutex netmap_mutex = OVS_MUTEX_INITIALIZER;
@@ -120,6 +142,195 @@ netdev_netmap_alloc(void)
     return NULL;
 }
 
+static struct nm_alloc_ring*
+nm_alloc_ring_new(bool fill) {
+    struct nm_alloc_ring* r;
+
+    r = (struct nm_alloc_ring*)
+       xmalloc(sizeof(struct nm_alloc_ring));
+    nma.nrings++;
+
+    if (fill) {
+        r->head = 0;
+        r->tail = NM_ALLOC_RING_SIZE - 1;
+        r->next = NULL;
+
+        for (int i = 0; i < NM_ALLOC_RING_SIZE - 1; i++)
+            r->ring[i] = dp_packet_new(0);
+
+        r->ring[NM_ALLOC_RING_SIZE - 1] = NULL;
+    } else {
+        memset(r, 0, sizeof(struct nm_alloc_ring));
+    }
+
+    return r;
+}
+
+static inline void
+nm_alloc_ring_free(struct nm_alloc_ring* r) {
+    if (r) {
+        nma.nrings--;
+        for (int i = 0; i < NM_ALLOC_RING_SIZE; i++) {
+            if (r->ring[i])
+                free(r->ring[i]);
+        }
+        free(r);
+    }
+}
+
+static inline void
+nm_alloc_ring_push(struct nm_alloc_ring* r) {
+    if (r) {
+        r->next = nma.rlist;
+        nma.rlist = r;
+    }
+}
+
+static struct nm_alloc_ring*
+nm_alloc_ring_pop(void) {
+    struct nm_alloc_ring* r = nma.rlist;
+
+    if (r)
+        nma.rlist = r->next;
+    else
+        r = nm_alloc_ring_new(true);
+
+    return r;
+}
+
+/* Swaps two dp_packet rings from the global allocator */
+static inline struct nm_alloc_ring*
+nm_alloc_ring_swap(struct nm_alloc_ring* r) {
+    if (r) {
+        struct nm_alloc_ring* rnew;
+        rnew = nm_alloc_ring_pop();
+        nm_alloc_ring_push(r);
+        return rnew;
+    }
+    return r;
+}
+
+/* Returns the number of dp_packets that you can pop out */
+static inline uint16_t
+nm_alloc_ring_available(struct nm_alloc_ring* nmr) {
+    int16_t space = nmr->tail - nmr->head;
+
+    if (space < 0)
+        space += NM_ALLOC_RING_SIZE;
+
+    return space;
+}
+
+/* Returns the number of dp_packets that you can push in */
+static inline uint16_t
+nm_alloc_ring_empty(struct nm_alloc_ring* nmr) {
+    int16_t space = nmr->head - nmr->tail;
+
+    if (space < 0)
+        space += NM_ALLOC_RING_SIZE;
+
+    return space;
+}
+
+static inline bool
+nm_alloc_ring_is_empty(struct nm_alloc_ring* nmr) {
+    return nm_alloc_ring_empty(nmr) == 0;
+}
+
+static inline bool
+nm_alloc_ring_is_full(struct nm_alloc_ring* nmr) {
+    return nm_alloc_ring_available(nmr) == NM_ALLOC_RING_SIZE;
+}
+
+static inline uint16_t
+nm_alloc_ring_next(uint16_t i, uint16_t n) {
+    uint16_t sum = i + n;
+
+    if (OVS_UNLIKELY(sum >= NM_ALLOC_RING_SIZE))
+        sum-=NM_ALLOC_RING_SIZE;
+
+    return sum;
+}
+
+static void
+nm_alloc_init(void) {
+    struct nm_alloc_ring* r;
+    uint16_t count = NM_ALLOC_RINGS_INIT;
+
+    if (!nma.nrings)
+        while (count--) {
+            r = nm_alloc_ring_new(true);
+            nm_alloc_ring_push(r);
+        }
+}
+
+static void
+nm_alloc_free_all(void) {
+    struct nm_alloc_ring* r;
+
+    while (nma.rlist) {
+        r = nm_alloc_ring_pop();
+        nma.rlist = r->next;
+        nm_alloc_ring_free(r);
+    }
+}
+
+void
+nm_alloc_free(struct nm_alloc_ring* nmr, struct dp_packet* packet) {
+    uint16_t space = nm_alloc_ring_empty(nmr);
+    if (space) {
+        nmr->ring[nmr->tail] = packet;
+        nmr->tail = nm_alloc_ring_next(nmr->tail, 1);
+    } else {
+        /* push to backup ring, if full swap with empty one */
+    }
+    VLOG_INFO("nm_alloc_free: %x tail: %d", packet, nmr->tail);
+}
+
+/*
+static inline int
+nm_alloc_prepare_batch(struct nm_alloc_ring* nmr, struct dp_packet_batch* b, uint8_t n) {
+    int16_t head;
+
+    n = MIN(n, nm_alloc_ring_available(nmr));
+
+    head = nmr->head;
+    for (int i = 0; i < n; i++) {
+        b->packets[b->count + i] = nmr->ring[head];
+        head = OVS_LIKELY(head < (NM_ALLOC_RING_SIZE - 1))? head + 1 : 0;
+    }
+    nmr->head = head;
+
+    return n;
+}
+*/
+
+static inline int
+nm_alloc_prepare_batch(struct nm_alloc_ring* nmr, struct dp_packet_batch* b, uint8_t n) {
+    int16_t overflow;
+
+    n = MIN(n, nm_alloc_ring_available(nmr));
+
+    if (!n)
+        return 0;
+
+    overflow = nmr->head + n - NM_ALLOC_RING_SIZE + 1;
+
+    if (overflow <= 0) {
+        //VLOG_INFO("overflow:%d nb:%dB | n:%d", overflow, nb, n);
+        memcpy(&b->packets[b->count], &nmr->ring[nmr->head], n * sizeof(struct dp_packet*));
+    } else {
+        int16_t cut = n - overflow;
+        //VLOG_INFO("overflow:%dB nb:%dB -> (cut:%d) | n:%d", overflow, nb, cut, n);
+        memcpy(&b->packets[b->count], &nmr->ring[nmr->head], cut * sizeof(struct dp_packet*));
+        memcpy(&b->packets[b->count + cut], &nmr->ring[0], overflow * sizeof(struct dp_packet*));
+    }
+
+    nmr->head = nm_alloc_ring_next(nmr->head, n);
+
+    return n;
+}
+
 #ifdef DEBUGTHREAD
 static void*
 debug_thread(void *ptr)
@@ -134,13 +345,13 @@ debug_thread(void *ptr)
     useconds_t usleeptime = sleeptime * 1e6;
     clockid_t clkid = CLOCK_REALTIME;
 
-    unsigned int nrx_calls, ntx_calls;
-    unsigned int nrx_sync, ntx_sync;
-    unsigned int nrx_packets, ntx_packets;
+    uint64_t nrx_calls, ntx_calls;
+    uint64_t nrx_sync, ntx_sync;
+    uint64_t nrx_packets, ntx_packets;
 
-    unsigned int p_nrx_calls = 0, p_ntx_calls = 0;
-    unsigned int p_nrx_sync = 0, p_ntx_sync = 0;
-    unsigned int p_nrx_packets = 0, p_ntx_packets = 0;
+    uint64_t p_nrx_calls = 0, p_ntx_calls = 0;
+    uint64_t p_nrx_sync = 0, p_ntx_sync = 0;
+    uint64_t p_nrx_packets = 0, p_ntx_packets = 0;
 
     clock_gettime(clkid, &start);
     snprintf(fname, 100, "/tmp/%s-%s.log", netdev_get_type(netdev), netdev_get_name(netdev));
@@ -148,7 +359,7 @@ debug_thread(void *ptr)
 
     while (running) {
         double timediff, rx, tx, ntx, nrx, rxs = 0, txs = 0, txb = 0, rxb = 0;
-        unsigned long dtxc, drxc, dtxs, drxs, dtxp, drxp;
+        uint64_t dtxc, drxc, dtxs, drxs, dtxp, drxp;
 
         usleep(usleeptime);
 
@@ -181,6 +392,7 @@ debug_thread(void *ptr)
             txb = (double) dtxp / (double) dtxc;
             txs = (double) dtxs / (double) dtxc;
         }
+
         if (drxc) {
             rxb = (double) drxp / (double) drxc;
             rxs = (double) drxs / (double) drxc;
@@ -191,9 +403,8 @@ debug_thread(void *ptr)
                  tx, ntx / 1e6, txs * 100, txb,
                  rx, nrx / 1e6, rxs * 100, rxb);
         fwrite(buffer, strlen(buffer), sizeof(char), ff);
-        fflush(ff);
 
-        //VLOG_INFO("%s", buffer);
+        fflush(ff);
 
         p_nrx_calls = nrx_calls;
         p_ntx_calls = ntx_calls;
@@ -207,73 +418,6 @@ debug_thread(void *ptr)
     return NULL;
 }
 #endif
-
-static inline void
-netmap_recycle_push(struct netdev_netmap* dev, struct dp_packet* packet) {
-    if (OVS_LIKELY(packet)) {
-        packet->next = dev->recycled_list;
-        dev->recycled_list = packet;
-        dev->recycled_count++;
-    }
-}
-
-static inline struct dp_packet*
-netmap_recycle_pop(struct netdev_netmap* dev) {
-    struct dp_packet* packet = dev->recycled_list;
-
-    if (OVS_LIKELY(packet)) {
-        dev->recycled_list = packet->next;
-        dev->recycled_count--;
-    }
-
-    return packet;
-}
-
-static inline void
-netmap_recycle_pop_free(struct netdev_netmap* dev) {
-    struct dp_packet* packet = dev->recycled_list;
-
-    if (OVS_LIKELY(packet)) {
-        dev->recycled_list = packet->next;
-        dev->recycled_count--;
-        free(packet);
-    }
-}
-
-static inline void
-netmap_recycle_batch_clean(struct netdev_netmap* dev, struct dp_packet_batch* batch) {
-    for (int i = batch->count; i < NETDEV_MAX_BURST; i++)
-        netmap_recycle_push(dev, batch->packets[i]);
-}
-
-static inline void
-netmap_recycle_batch_prepare(struct netdev_netmap* dev, struct dp_packet_batch* batch) {
-    for (int i = 0; i < NETDEV_MAX_BURST; i++) {
-        batch->packets[i] = netmap_recycle_pop(dev);
-        if (!batch->packets[i])
-            batch->packets[i] = dp_packet_new(0);
-    }
-}
-
-static inline void
-netmap_recycle_refill(struct netdev_netmap* dev, unsigned int count) {
-    while (count-- > 0)
-        netmap_recycle_push(dev, dp_packet_new(0));
-}
-
-static inline void
-netmap_recycle_free(struct netdev_netmap* dev, unsigned int until) {
-    while (until > dev->recycled_count) {
-        netmap_recycle_pop_free(dev);
-    }
-}
-
-static inline void
-netmap_recycle_init(struct netdev_netmap* dev) {
-    dev->recycled_list = NULL;
-    dev->recycled_count = 0;
-    netmap_recycle_refill(dev, RECYCLED_DP_PACKETS_NUM);
-}
 
 static int
 netdev_netmap_construct(struct netdev *netdev)
@@ -291,19 +435,20 @@ netdev_netmap_construct(struct netdev *netdev)
 
     dev->flags = NETDEV_UP | NETDEV_PROMISC;
 
-    netdev->n_rxq = 0;
-    netdev->n_txq = 0;
-    dev->requested_n_rxq = NR_QUEUE;
-    dev->requested_n_txq = NR_QUEUE;
-    dev->requested_rxq_size = DEFAULT_RXQ_SIZE;
-    dev->requested_txq_size = DEFAULT_TXQ_SIZE;
+    //netdev->n_rxq = 0;
+    //netdev->n_txq = 0;
+    //dev->requested_n_rxq = NR_QUEUE;
+    //dev->requested_n_txq = NR_QUEUE;
+    //dev->requested_rxq_size = DEFAULT_RXQ_SIZE;
+    //dev->requested_txq_size = DEFAULT_TXQ_SIZE;
 
     VLOG_INFO("tsc ticks_per_second : %" PRIu64 "", ticks_per_second);
     dev->timestamp = rdtsc();
     dev->rxsync_rate_usecs = 10;
     /* dev->foundempty = 0; */
 
-    netmap_recycle_init(dev);
+    //nm_alloc_init();
+    dev->nmr = nm_alloc_ring_new(true); //pop();
 
     const char *ifname = netdev_get_name(netdev);
     dev->nmd = nm_open(ifname, NULL, 0, NULL);
@@ -319,9 +464,8 @@ netdev_netmap_construct(struct netdev *netdev)
 
     dev->requested_mtu = NETMAP_RXRING(dev->nmd->nifp, 0)->nr_buf_size;
 
-    dev->info.nmd = dev->nmd;
-    dev->info.recycled_list = &dev->recycled_list;
-    dev->info.recycled_count = &dev->recycled_count;
+    dev->nmi.nmd = dev->nmd;
+    dev->nmi.nmr = dev->nmr;
 
     netdev_request_reconfigure(netdev);
 
@@ -357,7 +501,8 @@ static void
 netdev_netmap_dealloc(struct netdev *netdev)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
-    netmap_recycle_free(dev, 0);
+    nm_alloc_ring_free(dev->nmr);
+    nm_alloc_free_all();
     free(dev);
 }
 
@@ -418,11 +563,11 @@ netdev_netmap_reconfigure(struct netdev *netdev)
 
     ovs_mutex_lock(&dev->mutex);
 
-    if (netdev->n_txq == dev->requested_n_txq
-        && netdev->n_rxq == dev->requested_n_rxq
-        && dev->mtu == dev->requested_mtu
-        && dev->rxq_size == dev->requested_rxq_size
-        && dev->txq_size == dev->requested_txq_size) {
+        if (dev->mtu == dev->requested_mtu) {
+//        && netdev->n_txq == dev->requested_n_txq
+//        && netdev->n_rxq == dev->requested_n_rxq
+//        && dev->rxq_size == dev->requested_rxq_size
+//        && dev->txq_size == dev->requested_txq_size) {
         /* Reconfiguration is unnecessary */
 
         goto out;
@@ -430,14 +575,14 @@ netdev_netmap_reconfigure(struct netdev *netdev)
 
     dev->mtu = dev->requested_mtu;
 
-    netdev->n_txq = dev->requested_n_txq;
-    netdev->n_rxq = dev->requested_n_rxq;
+//    netdev->n_txq = dev->requested_n_txq;
+//    netdev->n_rxq = dev->requested_n_rxq;
 
-    dev->rxq_size = dev->requested_rxq_size;
-    dev->txq_size = dev->requested_txq_size;
+//    dev->rxq_size = dev->requested_rxq_size;
+//    dev->txq_size = dev->requested_txq_size;
 
-    dev->up.n_rxq = 1;
-    dev->up.n_txq = 1;
+//    dev->up.n_rxq = 1;
+//    dev->up.n_txq = 1;
 
     netdev_change_seq_changed(netdev);
 
@@ -453,10 +598,10 @@ netdev_netmap_get_config(const struct netdev *netdev, struct smap *args)
 
     ovs_mutex_lock(&dev->mutex);
 
-    smap_add_format(args, "requested_rx_queues", "%d", dev->requested_n_rxq);
-    smap_add_format(args, "configured_rx_queues", "%d", netdev->n_rxq);
-    smap_add_format(args, "requested_tx_queues", "%d", dev->requested_n_txq);
-    smap_add_format(args, "configured_tx_queues", "%d", netdev->n_txq);
+    //smap_add_format(args, "requested_rx_queues", "%d", dev->requested_n_rxq);
+    //smap_add_format(args, "configured_rx_queues", "%d", netdev->n_rxq);
+    //smap_add_format(args, "requested_tx_queues", "%d", dev->requested_n_txq);
+    //smap_add_format(args, "configured_tx_queues", "%d", netdev->n_txq);
     smap_add_format(args, "mtu", "%d", dev->mtu);
 
     ovs_mutex_unlock(&dev->mutex);
@@ -517,12 +662,11 @@ netdev_netmap_send(struct netdev *netdev, int qid OVS_UNUSED,
 {
     struct netdev_netmap *dev = netdev_netmap_cast(netdev);
     struct nm_desc *nmd = dev->nmd;
-    struct netmap_ring *ring;
     uint16_t r, nrings = dev->nmd->nifp->ni_tx_rings;
-    uint32_t budget = batch->count, ntx = 0;
+    uint32_t budget = batch->count, count = 0;
     bool again = false;
 
-    //VLOG_INFO("send_%s : qid:%d, concurrent_txq:%d", (const char*) netdev_get_name(dev), qid, concurrent_txq);
+    //VLOG_INFO("s_%s : qid:%d, c_txq:%d", (const char*) netdev_get_name(dev), qid, concurrent_txq);
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
         dp_packet_delete_batch(batch, true);
@@ -535,8 +679,8 @@ netdev_netmap_send(struct netdev *netdev, int qid OVS_UNUSED,
 
 try_again:
     for (r = 0; r < nrings; r++) {
-        uint32_t head;
-        uint32_t space;
+        struct netmap_ring *ring;
+        uint32_t head, space;
 
         ring = NETMAP_TXRING(nmd->nifp, nmd->cur_tx_ring);
         space = nm_ring_space(ring); /* Available slots in this ring. */
@@ -546,43 +690,42 @@ try_again:
             space = budget;
         budget -= space;
 
-        //VLOG_INFO("send: %d free slots on %d ring | cycle %d/%d", space, nmd->cur_tx_ring, r, nrings-1);
+        //VLOG_INFO("s_%s: %d slots on %d | %d/%d",
+        //        netdev_get_name(dev), nm_ring_space(ring), nmd->cur_tx_ring, r, nrings-1);
 
         /* Transmit batch in this ring as much as possible. */
-        struct dp_packet *packet;
-        struct netmap_slot *ts;
-        struct netmap_slot *rs;
-        uint32_t idx;
-        if (OVS_UNLIKELY(batch->packets[0]->source != DPBUF_NETMAP)) {
-            while (space--) {
-                packet = batch->packets[ntx++];
-                ts = &ring->slot[head];
-                ts->len = dp_packet_get_send_len(packet);
+        while (space--) {
+            struct netmap_slot *ts, *rs;
+            struct dp_packet *packet;
+            uint32_t idx;
+
+            packet = batch->packets[count++];
+            ts = &ring->slot[head];
+            ts->len = dp_packet_get_send_len(packet);
+
+            /*VLOG_INFO("s_%s: %d/%d head:%d len:%d",
+                netdev_get_name(dev), count, space, head, ts->len);*/
+
+            if (OVS_UNLIKELY(batch->packets[count]->source != DPBUF_NETMAP)) {
                 /* send packet copying data to the netmap slot */
                 memcpy(NETMAP_BUF(ring, ts->buf_idx),
-                       dp_packet_data(packet),
-                       ts->len);
-                head = nm_ring_next(ring, head);
-            }
-         } else {
-             while (space--) {
-                packet = batch->packets[ntx++];
-                ts = &ring->slot[head];
-                ts->len = dp_packet_get_send_len(packet);
-                /* send packet swapping the slot (zero copy) */
-                rs = &(NETMAP_RXRING(packet->nm_info->nmd->nifp,
-                     packet->ring)->slot[packet->slot]);
+                   dp_packet_data(packet), ts->len);
+            } else {
+                /* send packet using zerocopy */
+                rs = &(NETMAP_RXRING(packet->nmi->nmd->nifp, packet->ring)->slot[packet->slot]);
                 idx = ts->buf_idx;
                 ts->buf_idx = rs->buf_idx;
                 rs->buf_idx = idx;
                 ts->flags |= NS_BUF_CHANGED;
                 rs->flags |= NS_BUF_CHANGED;
-                head = nm_ring_next(ring, head);
             }
+
+            head = nm_ring_next(ring, head);
         }
 
         ring->head = ring->cur = head;
 
+        /* We may have exhausted the budget */
         if (OVS_LIKELY(!budget))
             break;
 
@@ -593,7 +736,8 @@ try_again:
     }
 
     netmap_txsync(dev);
-    if (OVS_UNLIKELY(!ntx && !again)) {
+
+    if (OVS_UNLIKELY(!count && !again)) {
         again = true;
         goto try_again;
     }
@@ -604,10 +748,10 @@ try_again:
 
 #ifdef DEBUGTHREAD
     dev->ntx_calls++;
-    dev->ntx_packets+=ntx;
+    dev->ntx_packets+=count;
 #endif
 
-    //VLOG_INFO("send_%d: %d", (int) syscall(SYS_gettid), ntx);
+    //VLOG_INFO("s_%d: %d packets sent", (int) syscall(SYS_gettid), count);
 
     if (OVS_UNLIKELY(concurrent_txq)) {
         netmap_spin_unlock(&spinlock);
@@ -627,25 +771,20 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
 {
     struct netdev_netmap *dev = netdev_netmap_cast(rxq->netdev);
     struct nm_desc *nmd = dev->nmd;
-    struct netmap_ring *ring;
-    uint16_t r = 0, nrings = nmd->nifp->ni_rx_rings;
-    uint32_t budget = NETDEV_MAX_BURST, totalspace = 0;
+    uint16_t r, nrings = nmd->nifp->ni_rx_rings;
+    uint32_t budget = NETDEV_MAX_BURST, count = 0;
 
-    if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
+    if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP)))
         return EAGAIN;
-    }
 
-    netmap_recycle_batch_prepare(dev, batch);
+    for (r = nmd->first_rx_ring; r < nrings; r++)
+        count += nm_ring_space(NETMAP_RXRING(nmd->nifp, r));
 
-    for (r = nmd->first_rx_ring; r < nrings; r++) {
-        totalspace += nm_ring_space(NETMAP_RXRING(nmd->nifp, r));
-    }
-
-    if (totalspace < NETDEV_MAX_BURST){
+    if (!count)
         netmap_rxsync(dev);
-    }
 
     for (r = 0; r < nrings; r++) {
+        struct netmap_ring *ring;
         uint32_t head, space;
 
         ring = NETMAP_RXRING(nmd->nifp, nmd->cur_rx_ring);
@@ -655,16 +794,23 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             space = budget;
         budget -= space;
 
-        /* VLOG_INFO("rxq_recv_%s: %d slots found on %d ring | cycle %d/%d",
-         * netdev_get_name(dev), nm_ring_space(ring), nmd->cur_rx_ring, r, nrings-1); */
+        //if (space)
+        //VLOG_INFO_RL(&rl, "r_%s: %d slots on %d | %d/%d",
+        //    netdev_get_name(dev), nm_ring_space(ring), nmd->cur_rx_ring, r, nrings-1);
 
-        while (space--) {
-            struct dp_packet *packet = (struct dp_packet *) batch->packets[batch->count++];
+        count = nm_alloc_prepare_batch(dev->nmr, batch, space);
+
+        //if (count)
+        //VLOG_INFO("r_%s: batch prepared: %d available",
+        //    netdev_get_name(dev), count);
+
+        while (count--) {
+            struct dp_packet *packet = batch->packets[batch->count++];
             struct netmap_slot *slot = &ring->slot[head];
             void* buf = NETMAP_BUF(ring, slot->buf_idx);
-
+            //VLOG_INFO("init_%d len:%d", batch->count, slot->len);
             dp_packet_init_netmap(packet, buf, slot->len,
-                    &dev->info, nmd->cur_rx_ring, head);
+                    &dev->nmi, nmd->cur_rx_ring, head);
 
             head = nm_ring_next(ring, head);
         }
@@ -678,21 +824,22 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             nmd->cur_rx_ring = 0;
     }
 
-    /* push back unused dp_packets* .*/
-    netmap_recycle_batch_clean(dev, batch);
+#ifdef DEBUGTHREAD
+    dev->nrx_packets += batch->count;
+    dev->nrx_calls++;
+#endif
 
     if (batch->count == 0)
         return EAGAIN;
 
     dp_packet_batch_init_packet_fields(batch);
 
-#ifdef DEBUGTHREAD
-    dev->nrx_packets += batch->count;
-    dev->nrx_calls++;
-#endif
-
-    //VLOG_INFO("rxq_recv_%d: %d", (int) syscall(SYS_gettid), batch->count);
-
+    /*
+    if (batch->count)
+    VLOG_INFO("r_%d: %d", (int) syscall(SYS_gettid), batch->count);
+    else
+    VLOG_INFO_RL(&rl, "r_%d: %d", (int) syscall(SYS_gettid), batch->count);
+    */
     return 0;
 }
 

@@ -23,7 +23,7 @@ netmap_init__(const struct smap *ovs_other_config)
 }
 
 void
-netmap_init(const struct smap *ovs_other_config)
+netmap_init(const struct smap *ovs_other_config OVS_UNUSED)
 {
     static bool enabled = false;
 
