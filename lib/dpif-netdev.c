@@ -4112,6 +4112,9 @@ pmd_thread_main(void *f_)
     ovsthread_setspecific(pmd->dp->per_pmd_key, pmd);
     ovs_numa_thread_setaffinity_core(pmd->core_id);
     dpdk_set_lcore_id(pmd->core_id);
+#ifdef NETMAP_NETDEV
+    nm_alloc_init_local();
+#endif
     poll_cnt = pmd_load_queues_and_ports(pmd, &poll_list);
     emc_cache_init(&pmd->flow_cache);
 reload:

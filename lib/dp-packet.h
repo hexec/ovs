@@ -64,7 +64,7 @@ struct dp_packet {
     bool rss_hash_valid;        /* Is the 'rss_hash' valid? */
 #endif
 #ifdef NETMAP_NETDEV
-    struct nm_info* nmi;  /* Contains information of a netmap port
+    struct nm_desc* nmd;          /* Contains information of a netmap port
                                      that has created this dp-packet. */
     uint16_t ring;                /* Netmap ring that contains data. */
     uint32_t slot;                /* Netmap slot that contains data. */
@@ -123,7 +123,7 @@ void dp_packet_use_stub(struct dp_packet *, void *, size_t);
 void dp_packet_use_const(struct dp_packet *, const void *, size_t);
 
 void dp_packet_init_dpdk(struct dp_packet *, size_t allocated);
-void dp_packet_init_netmap(struct dp_packet *, void *, size_t allocated, struct nm_info*, uint16_t, uint32_t);
+void dp_packet_init_netmap(struct dp_packet *, void *, size_t allocated, struct nm_desc*, uint16_t, uint32_t);
 
 void dp_packet_init(struct dp_packet *, size_t);
 void dp_packet_uninit(struct dp_packet *);
@@ -185,7 +185,7 @@ dp_packet_delete(struct dp_packet *b)
         } else if (b->source == DPBUF_NETMAP) {
             /* It was allocated by a netdev_netmap, it will be marked
              * for reuse. */
-            nm_alloc_free(b->nmi->nmr, b);
+            nm_alloc_free_slot(b);
             return;
         }
 

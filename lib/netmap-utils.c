@@ -51,18 +51,18 @@ netmap_calibrate_tsc(void)
     return cy;
 }
 
-int netmap_spin_create(struct netmap_spinlock_t* l) {
+int netmap_spin_create(struct netmap_spinlock* l) {
     return pthread_spin_init(&l->lock, PTHREAD_PROCESS_SHARED);
 }
 
-int netmap_spin_lock(struct netmap_spinlock_t* l) {
+int netmap_spin_lock(struct netmap_spinlock* l) {
     return pthread_spin_lock(&l->lock);
 }
 
-int netmap_spin_unlock(struct netmap_spinlock_t* l) {
+int netmap_spin_unlock(struct netmap_spinlock* l) {
     return pthread_spin_unlock(&l->lock);
 }
 
-int netmap_spin_destroy(struct netmap_spinlock_t* l) {
+int netmap_spin_destroy(struct netmap_spinlock* l) {
     return pthread_spin_destroy(&l->lock);
 }

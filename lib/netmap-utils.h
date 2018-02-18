@@ -22,14 +22,14 @@ rdtsc(void)
 }
 #endif
 
-struct netmap_spinlock_t {
+struct netmap_spinlock {
     pthread_spinlock_t lock;
 };
 
-int netmap_spin_create(struct netmap_spinlock_t* l);
-int netmap_spin_lock(struct netmap_spinlock_t* l);
-int netmap_spin_unlock(struct netmap_spinlock_t* l);
-int netmap_spin_destroy(struct netmap_spinlock_t* l);
+int netmap_spin_create(struct netmap_spinlock* l);
+int netmap_spin_lock(struct netmap_spinlock* l);
+int netmap_spin_unlock(struct netmap_spinlock* l);
+int netmap_spin_destroy(struct netmap_spinlock* l);
 
 /*
 #define barrier() asm volatile ("" ::: "memory")

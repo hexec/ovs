@@ -15,13 +15,6 @@
 
 VLOG_DEFINE_THIS_MODULE(netmap);
 
-static void
-netmap_init__(const struct smap *ovs_other_config)
-{
-    /* register the netmap classes */
-    netdev_netmap_register();
-}
-
 void
 netmap_init(const struct smap *ovs_other_config OVS_UNUSED)
 {
@@ -33,16 +26,14 @@ netmap_init(const struct smap *ovs_other_config OVS_UNUSED)
 
     if (smap_get_bool(ovs_other_config, "netmap-init", false)) {
         static struct ovsthread_once once_enable = OVSTHREAD_ONCE_INITIALIZER;
-
         if (ovsthread_once_start(&once_enable)) {
-            VLOG_INFO("NETMAP Enabled - initializing...");
+            nm_alloc_init_global();
             netmap_calibrate_tsc();
-            netmap_init__(ovs_other_config);
+            netdev_netmap_register();
             enabled = true;
-            VLOG_INFO("NETMAP Enabled - initialized");
             ovsthread_once_done(&once_enable);
+            VLOG_INFO("NETMAP Enabled");
         }
-    } else {
+    } else
         VLOG_INFO_ONCE("NETMAP Disabled - Use other_config:netmap-init to enable");
-    }
 }
