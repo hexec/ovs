@@ -291,15 +291,10 @@ nm_alloc_clean_batch(struct dp_packet_batch* b) {
     struct nm_alloc_buf* buf;
     uint8_t sa, sb, sc, sd;
 
-    if (b->packets[0]->source != DPBUF_NETMAP) { // TODO chek if every packet is nm
-        dp_packet_delete_batch(b, true);
-        return;
-    }
-
     buf = put_buf;
     sa = MIN(b->count, NMA_BUF_SIZE - buf->idx);
     memcpy(&buf->buf[buf->idx],
-            &b->packets[b->count],
+            &b->packets[0],
             sa * sizeof(struct dp_packet*));
     buf->idx += sa;
 
@@ -308,7 +303,7 @@ nm_alloc_clean_batch(struct dp_packet_batch* b) {
         buf = get_buf;
         sc = MIN(sb, NMA_BUF_SIZE - buf->idx);
         memcpy(&buf->buf[buf->idx],
-                &b->packets[b->count + sa],
+                &b->packets[sa],
                 sc * sizeof(struct dp_packet*));
         buf->idx += sc;
 
@@ -316,21 +311,15 @@ nm_alloc_clean_batch(struct dp_packet_batch* b) {
             buf = put_buf = nm_alloc_buf_swap(put_buf, false);
             sd = b->count - sa - sc;
             memcpy(&buf->buf[buf->idx],
-                &b->packets[b->count + sa + sc],
+                &b->packets[sa + sc],
                 (sd) * sizeof(struct dp_packet*));
             buf->idx += sd;
         }
     }
 
-    nm_alloc_buf_exchange();
+    //nm_alloc_buf_exchange();
+    dp_packet_batch_init(b);
 }
-
-/*static inline nm_alloc_copy_to_batch(struct nm_alloc_buf* buf, struct dp_packet_batch* b, uint8_t off, uint8_t n) {
-    memcpy(&b->packets[b->count + off],
-            &buf->buf[buf->idx - n],
-            n * sizeof(struct dp_packet*));
-    buf->idx -= n;
-}*/
 
 static inline int
 nm_alloc_prepare_batch(struct dp_packet_batch* b, uint8_t n) {
@@ -346,9 +335,6 @@ nm_alloc_prepare_batch(struct dp_packet_batch* b, uint8_t n) {
             &buf->buf[buf->idx - sa],
             sa * sizeof(struct dp_packet*));
     buf->idx -= sa;
-
-    /*if (n)
-    VLOG_INFO("get_idx:%d -> want: %d has : %d [%x-%x]", buf->idx, n, sa, buf->buf[buf->idx - sa], buf->buf[buf->idx]);*/
 
     int8_t sc = 0;
     if (sb > 0) {
@@ -736,10 +722,13 @@ try_again:
         goto try_again;
     }
 
-    /* it actually deletes the batch if contains non netmap packets,
-     * it is used also to clean the batch. */
-    dp_packet_delete_batch(batch, true);
-    //nm_alloc_clean_batch(batch);
+    if (batch->packets[0]->source != DPBUF_NETMAP) { // TODO chek if every packet is nm
+        dp_packet_delete_batch(batch, true);
+    } else {
+        /* it actually deletes the batch if contains non netmap packets,
+         * it is used also to clean the batch. */
+        nm_alloc_clean_batch(batch);
+    }
 
 #ifdef DBG_THREAD
         dev->ntx_calls++;
