@@ -275,14 +275,15 @@ nm_alloc_close(void) {
 
 void
 nm_alloc_free_slot(struct dp_packet* packet) {
-    if (OVS_UNLIKELY(put_buf->idx == (NMA_BUF_SIZE - 1))) {
-        if (OVS_UNLIKELY(get_buf == (NMA_BUF_SIZE - 1)))
-            put_buf = nm_alloc_buf_swap(put_buf, false);
-        else
-            get_buf->buf[get_buf->idx++] = packet;
+    struct nm_alloc_buf* buf = put_buf;
+
+    if (OVS_UNLIKELY(buf->idx == (NMA_BUF_SIZE - 1))) {
+        buf = get_buf;
+        if (OVS_UNLIKELY(buf->idx == (NMA_BUF_SIZE - 1)))
+            put_buf = buf = nm_alloc_buf_swap(put_buf, false);
     }
 
-    put_buf->buf[put_buf->idx++] = packet;
+    buf->buf[buf->idx++] = packet;
 }
 
 static inline void
@@ -321,7 +322,7 @@ nm_alloc_clean_batch(struct dp_packet_batch* b) {
         }
     }
 
-    /*nm_alloc_buf_exchange();*/
+    nm_alloc_buf_exchange();
 }
 
 /*static inline nm_alloc_copy_to_batch(struct nm_alloc_buf* buf, struct dp_packet_batch* b, uint8_t off, uint8_t n) {
