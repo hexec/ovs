@@ -29,7 +29,7 @@
 #include "smap.h"
 
 //#define DBG_THREAD
-#define NMA_BUF_SIZE 128
+#define NMA_BUF_SIZE 512
 #define NMA_NBUFS_INIT 4
 
 VLOG_DEFINE_THIS_MODULE(netdev_netmap);
@@ -659,7 +659,7 @@ netdev_netmap_send(struct netdev *netdev, int qid OVS_UNUSED,
     uint32_t budget = batch->count, count = 0;
     bool again = false;
 
-    //VLOG_INFO("s_%s : qid:%d, c_txq:%d", (const char*) netdev_get_name(dev), qid, concurrent_txq);
+    //VLOG_INFO("s_%s : qid:%d, c_txq:%d batch:%d", (const char*) netdev_get_name(dev), qid, concurrent_txq, budget);
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
         dp_packet_delete_batch(batch, true);
@@ -699,7 +699,7 @@ try_again:
             //VLOG_INFO("s_%s: %d/%d head:%d len:%d",
             //    (const char*)netdev_get_name(dev), count, space, head, ts->len);
 
-            if (OVS_UNLIKELY(batch->packets[count]->source != DPBUF_NETMAP)) {
+            if (OVS_UNLIKELY(packet->source != DPBUF_NETMAP)) {
                 /* send packet copying data to the netmap slot */
                 memcpy(NETMAP_BUF(ring, ts->buf_idx),
                     dp_packet_data(packet), ts->len);
@@ -805,7 +805,6 @@ netdev_netmap_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch)
             //VLOG_INFO("init_%d len:%d batch_packet: %x", batch->count, slot->len, packet);
             dp_packet_init_netmap(packet, buf, slot->len,
                     dev->nmd, nmd->cur_rx_ring, head);
-
             head = nm_ring_next(ring, head);
         }
 
