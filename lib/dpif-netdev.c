@@ -56,8 +56,8 @@
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/list.h"
 #include "openvswitch/match.h"
+#include "openvswitch/ofp-parse.h"
 #include "openvswitch/ofp-print.h"
-#include "openvswitch/ofp-util.h"
 #include "openvswitch/ofpbuf.h"
 #include "openvswitch/shash.h"
 #include "openvswitch/vlog.h"
@@ -5845,7 +5845,7 @@ dpif_netdev_ct_flush(struct dpif *dpif, const uint16_t *zone,
     struct dp_netdev *dp = get_dp_netdev(dpif);
 
     if (tuple) {
-        return EOPNOTSUPP;
+        return conntrack_flush_tuple(&dp->conntrack, tuple, zone ? *zone : 0);
     }
     return conntrack_flush(&dp->conntrack, zone);
 }

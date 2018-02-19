@@ -151,10 +151,10 @@ AC_DEFUN([OVS_CHECK_LINUX], [
     AC_MSG_RESULT([$kversion])
 
     if test "$version" -ge 4; then
-       if test "$version" = 4 && test "$patchlevel" -le 13; then
+       if test "$version" = 4 && test "$patchlevel" -le 15; then
           : # Linux 4.x
        else
-          AC_ERROR([Linux kernel in $KBUILD is version $kversion, but version newer than 4.13.x is not supported (please refer to the FAQ for advice)])
+          AC_ERROR([Linux kernel in $KBUILD is version $kversion, but version newer than 4.15.x is not supported (please refer to the FAQ for advice)])
        fi
     elif test "$version" = 3 && test "$patchlevel" -ge 10; then
        : # Linux 3.x
@@ -819,6 +819,21 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
                         [OVS_DEFINE([HAVE_LIST_IN_NF_HOOK_OPS])])
   OVS_GREP_IFELSE([$KSRC/include/uapi/linux/netfilter/nf_conntrack_common.h],
                   [IP_CT_UNTRACKED])
+  OVS_FIND_PARAM_IFELSE([$KSRC/include/linux/netdevice.h],
+                        [netdev_master_upper_dev_link], [extack],
+                        [OVS_DEFINE([HAVE_UPPER_DEV_LINK_EXTACK])])
+  OVS_GREP_IFELSE([$KSRC/include/linux/compiler_types.h],
+                  [__LINUX_COMPILER_TYPES_H],
+                  [OVS_DEFINE([HAVE_LINUX_COMPILER_TYPES_H])])
+  OVS_GREP_IFELSE([$KSRC/include/linux/timekeeping.h],
+                  [ktime_get_ts64],
+                  [OVS_DEFINE([HAVE_KTIME_GET_TS64])])
+  OVS_GREP_IFELSE([$KSRC/include/net/net_namespace.h],
+                  [EXPORT_SYMBOL_GPL(peernet2id_alloc)],
+                  [OVS_DEFINE([HAVE_PEERNET2ID_ALLOC])])
+  OVS_GREP_IFELSE([$KSRC/include/linux/timekeeping.h],
+                  [ktime_get_ns],
+                  [OVS_DEFINE([HAVE_KTIME_GET_NS])])
 
   if cmp -s datapath/linux/kcompat.h.new \
             datapath/linux/kcompat.h >/dev/null 2>&1; then

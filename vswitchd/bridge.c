@@ -46,7 +46,6 @@
 #include "openvswitch/list.h"
 #include "openvswitch/meta-flow.h"
 #include "openvswitch/ofp-print.h"
-#include "openvswitch/ofp-util.h"
 #include "openvswitch/ofpbuf.h"
 #include "openvswitch/vlog.h"
 #include "ovs-lldp.h"
