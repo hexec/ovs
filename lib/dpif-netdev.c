@@ -3536,7 +3536,7 @@ rxq_scheduling(struct dp_netdev *dp, bool pinned) OVS_REQUIRES(dp->port_mutex)
     struct rr_numa_list rr;
     struct rr_numa *non_local_numa = NULL;
     struct dp_netdev_rxq ** rxqs = NULL;
-    int i, n_rxqs = 0;
+    int n_rxqs = 0;
     struct rr_numa *numa = NULL;
     int numa_id;
 
@@ -3589,7 +3589,7 @@ rxq_scheduling(struct dp_netdev *dp, bool pinned) OVS_REQUIRES(dp->port_mutex)
 
     rr_numa_list_populate(dp, &rr);
     /* Assign the sorted queues to pmds in round robin. */
-    for (i = 0; i < n_rxqs; i++) {
+    for (int i = 0; i < n_rxqs; i++) {
         numa_id = netdev_get_numa_id(rxqs[i]->port->netdev);
         numa = rr_numa_list_lookup(&rr, numa_id);
         if (!numa) {
@@ -4226,7 +4226,6 @@ dp_netdev_run_meter(struct dp_netdev *dp, struct dp_packet_batch *packets_,
     struct dp_packet *packet;
     long long int long_delta_t; /* msec */
     uint32_t delta_t; /* msec */
-    int i;
     const size_t cnt = dp_packet_batch_size(packets_);
     uint32_t bytes, volume;
     int exceeded_band[NETDEV_MAX_BURST];
@@ -4260,7 +4259,7 @@ dp_netdev_run_meter(struct dp_netdev *dp, struct dp_packet_batch *packets_,
     meter->used = now;
     meter->packet_count += cnt;
     bytes = 0;
-    DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+    DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
         bytes += dp_packet_size(packet);
     }
     meter->byte_count += bytes;
@@ -4302,7 +4301,7 @@ dp_netdev_run_meter(struct dp_netdev *dp, struct dp_packet_batch *packets_,
                 /* Update the exceeding band for each exceeding packet.
                  * (Only one band will be fired by a packet, and that
                  * can be different for each packet.) */
-                for (i = band_exceeded_pkt; i < cnt; i++) {
+                for (int i = band_exceeded_pkt; i < cnt; i++) {
                     if (band->up.rate > exceeded_rate[i]) {
                         exceeded_rate[i] = band->up.rate;
                         exceeded_band[i] = m;
@@ -4311,7 +4310,7 @@ dp_netdev_run_meter(struct dp_netdev *dp, struct dp_packet_batch *packets_,
             } else {
                 /* Packet sizes differ, must process one-by-one. */
                 band_exceeded_pkt = cnt;
-                DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+                DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
                     uint32_t bits = dp_packet_size(packet) * 8;
 
                     if (band->bucket >= bits) {
@@ -5150,9 +5149,8 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
     int upcall_ok_cnt = 0, upcall_fail_cnt = 0;
     int lookup_cnt = 0, add_lookup_cnt;
     bool any_miss;
-    size_t i;
 
-    for (i = 0; i < cnt; i++) {
+    for (size_t i = 0; i < cnt; i++) {
         /* Key length is needed in all the cases, hash computed on demand. */
         keys[i].len = netdev_flow_key_size(miniflow_n_values(&keys[i].mf));
     }
@@ -5171,7 +5169,7 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
         ofpbuf_use_stub(&actions, actions_stub, sizeof actions_stub);
         ofpbuf_use_stub(&put_actions, slow_stub, sizeof slow_stub);
 
-        DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+        DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
             struct dp_netdev_flow *netdev_flow;
 
             if (OVS_LIKELY(rules[i])) {
@@ -5203,7 +5201,7 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
         ofpbuf_uninit(&put_actions);
         fat_rwlock_unlock(&dp->upcall_rwlock);
     } else if (OVS_UNLIKELY(any_miss)) {
-        DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+        DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
             if (OVS_UNLIKELY(!rules[i])) {
                 dp_packet_delete(packet);
                 upcall_fail_cnt++;
@@ -5211,7 +5209,7 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
         }
     }
 
-    DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+    DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
         struct dp_netdev_flow *flow;
 
         if (OVS_UNLIKELY(!rules[i])) {
@@ -5498,7 +5496,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                 pmd->n_output_batches++;
             }
 
-            DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+            DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
                 p->output_pkts_rxqs[dp_packet_batch_size(&p->output_pkts)] =
                                                              pmd->ctx.last_rxq;
                 dp_packet_batch_add(&p->output_pkts, packet);
@@ -5538,7 +5536,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                 }
 
                 struct dp_packet *packet;
-                DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+                DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
                     packet->md.in_port.odp_port = portno;
                 }
 
@@ -5575,7 +5573,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
             }
 
             struct dp_packet *packet;
-            DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+            DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
                 flow_extract(packet, &flow);
                 dpif_flow_hash(dp->dpif, &flow, sizeof flow, &ufid);
                 dp_execute_userspace_action(pmd, packet, may_steal, &flow,
@@ -5603,7 +5601,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
             }
 
             struct dp_packet *packet;
-            DP_PACKET_BATCH_FOR_EACH (packet, packets_) {
+            DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
                 packet->md.recirc_id = nl_attr_get_u32(a);
             }
 
