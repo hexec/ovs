@@ -8,7 +8,6 @@
 #include "dirs.h"
 #include "netdev-netmap.h"
 #include "netmap.h"
-#include "netmap-utils.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/vlog.h"
 #include "smap.h"
@@ -26,9 +25,9 @@ netmap_init(const struct smap *ovs_other_config OVS_UNUSED)
 
     if (smap_get_bool(ovs_other_config, "netmap-init", false)) {
         static struct ovsthread_once once_enable = OVSTHREAD_ONCE_INITIALIZER;
+        int extrabufs = smap_get_int(ovs_other_config, "netmap-extrabufs", 128);
         if (ovsthread_once_start(&once_enable)) {
-            nm_alloc_init_global();
-            netmap_calibrate_tsc();
+            nm_init(extrabufs);
             netdev_netmap_register();
             enabled = true;
             ovsthread_once_done(&once_enable);

@@ -92,6 +92,7 @@ dp_packet_use_const(struct dp_packet *b, const void *data, size_t size)
     dp_packet_set_size(b, size);
 }
 
+
 /* Initializes 'b' as an empty dp_packet that contains the 'allocated' bytes.
  * DPDK allocated dp_packet and *data is allocated from one continous memory
  * region as part of memory pool, so in memory data start right after
@@ -105,15 +106,18 @@ dp_packet_init_dpdk(struct dp_packet *b, size_t allocated)
     b->source = DPBUF_DPDK;
 }
 
+/* Initializes 'b' as a dp_packet whose data points to a netmap buffer of size
+ * 'size' bytes. */
+#ifdef NETMAP_NETDEV
 void
-dp_packet_init_netmap(struct dp_packet *b, void *data, size_t size, struct nm_desc* nmd, uint16_t ring, uint32_t slot)
+dp_packet_init_netmap(struct dp_packet *b, void *data, size_t size)
 {
-    dp_packet_use__(b, data, size, DPBUF_NETMAP);
+    b->source = DPBUF_NETMAP;
+    dp_packet_set_base(b, data);
+    dp_packet_set_data(b, data);
     dp_packet_set_size(b, size);
-    b->nmd = nmd;
-    b->ring = ring;
-    b->slot = slot;
 }
+#endif
 
 /* Initializes 'b' as an empty dp_packet with an initial capacity of 'size'
  * bytes. */
@@ -136,6 +140,9 @@ dp_packet_uninit(struct dp_packet *b)
              * created as a dp_packet */
             free_dpdk_buf((struct dp_packet*) b);
 #endif
+        } else if (b->source == DPBUF_NETMAP) {
+            /* If this dp_packet was allocated by NETMAP, release it. */
+            nm_free_packet(b);
         }
     }
 }

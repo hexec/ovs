@@ -234,6 +234,14 @@
         </p>
       </column>
 
+      <column name="other_config" key="netmap-extrabufs"
+              type='{"type": "integer", "minInteger": 32}'>
+        <p>
+            Specifies the number of netmap extrabuffers to open the first netmap
+            port with.
+        </p>
+      </column>
+
       <column name="other_config" key="dpdk-init"
               type='{"type": "boolean"}'>
         <p>

@@ -3,9 +3,9 @@
 
 struct dp_packet;
 
-void nm_alloc_init_global(void);
-void nm_alloc_init_local(void);
-void nm_alloc_free_slot(struct dp_packet*);
+void nm_init(int);
+void nm_alloc_init(void);
+void nm_free_packet(struct dp_packet *);
 void netdev_netmap_register(void);
 
 #endif /* netdev-netmap.h */
