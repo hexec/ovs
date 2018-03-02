@@ -348,7 +348,7 @@ AC_DEFUN([OVS_CHECK_NETMAP], [
   AC_ARG_WITH([netmap],
               [AC_HELP_STRING([--with-netmap], [Enable NETMAP])],
               [have_netmap=true])
-  AC_MSG_CHECKING([whether netmap is enabled])
+  AC_MSG_CHECKING([whether netmap datapath is enabled])
 
   if test "$have_netmap" != true || test "$with_netmap" = no; then
     AC_MSG_RESULT([no])
@@ -356,9 +356,20 @@ AC_DEFUN([OVS_CHECK_NETMAP], [
     AC_MSG_RESULT([yes])
     NETMAP_INCLUDE="-I/usr/include/net"
     CFLAGS="$CFLAGS $NETMAP_INCLUDE"
-    OVS_CFLAGS="$OVS_CFLAGS $NETMAP_INCLUDE"
-    NETMAP_FOUND=true
-    AC_DEFINE([NETMAP_NETDEV], [1], [System uses the NETMAP module.])
+    NETMAP_FOUND=false
+    AC_LINK_IFELSE(
+       [AC_LANG_PROGRAM([#include <net/if.h>
+                         #include<netinet/in.h>
+                         #include<net/netmap.h>
+                         #include<net/netmap_user.h>],
+                        [int main(){};])],
+       [NETMAP_FOUND=true])
+    if $NETMAP_FOUND; then
+        AC_DEFINE([NETMAP_NETDEV], [1], [NETMAP datapath is enabled.])
+        OVS_CFLAGS="$OVS_CFLAGS $NETMAP_INCLUDE"
+    else
+        AC_MSG_ERROR([Could not find NETMAP headers])
+    fi
   fi
 
   AM_CONDITIONAL([NETMAP_NETDEV], test "$NETMAP_FOUND" = true)
@@ -923,7 +934,7 @@ dnl with or without modifications, as long as this notice is preserved.
 
 AC_DEFUN([_OVS_CHECK_CC_OPTION], [dnl
   m4_define([ovs_cv_name], [ovs_cv_[]m4_translit([$1], [-= ], [__])])dnl
-  AC_CACHE_CHECK([whether $CC accepts $1], [ovs_cv_name], 
+  AC_CACHE_CHECK([whether $CC accepts $1], [ovs_cv_name],
     [ovs_save_CFLAGS="$CFLAGS"
      dnl Include -Werror in the compiler options, because without -Werror
      dnl clang's GCC-compatible compiler driver does not return a failure
@@ -974,7 +985,7 @@ dnl OVS_ENABLE_OPTION([OPTION])
 dnl Check whether the given C compiler OPTION is accepted.
 dnl If so, add it to WARNING_FLAGS.
 dnl Example: OVS_ENABLE_OPTION([-Wdeclaration-after-statement])
-AC_DEFUN([OVS_ENABLE_OPTION], 
+AC_DEFUN([OVS_ENABLE_OPTION],
   [OVS_CHECK_CC_OPTION([$1], [WARNING_FLAGS="$WARNING_FLAGS $1"])
    AC_SUBST([WARNING_FLAGS])])
 
